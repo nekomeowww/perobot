@@ -86,7 +86,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return nil
 	})
 	if err != nil {
-		h.Logger.WithFields(loggerFields).WithError(err).Error("failed to get tweet")
+		h.Logger.WithFields(loggerFields).Errorf("failed to get tweet, err: %v", err)
 		return
 	}
 	if tweet == nil {
@@ -141,10 +141,11 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 				tweetAuthorInfo,
 				tweetRawURL,
 			)
-			fmt.Println(inputMediaPhoto.Caption)
 			if inputMediaPhoto.Caption == "" {
 				inputMediaPhoto.Caption = c.Update.ChannelPost.Text
 			}
+
+			h.Logger.Debugf("new images message with caption: %s", inputMediaPhoto.Caption)
 		}
 
 		mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaPhoto)
@@ -152,7 +153,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 
 	_, err = c.Bot.SendMediaGroup(mediaGroupConfig)
 	if err != nil {
-		h.Logger.WithError(err).Error(err)
+		h.Logger.Error(err)
 		return
 	}
 
@@ -161,7 +162,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	// 删除原始推文
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))
 	if err != nil {
-		h.Logger.WithError(err).Error(err)
+		h.Logger.Error(err)
 		return
 	}
 }
@@ -195,7 +196,7 @@ func (h *Handler) fetchTweetImage(link string, loggerFields logrus.Fields) (*byt
 	buffer := new(bytes.Buffer)
 	resp, err := h.ReqClient.R().SetOutput(buffer).Get(link)
 	if err != nil {
-		h.Logger.WithFields(loggerFields).WithError(err).Error("failed to fetch image from tweet")
+		h.Logger.WithFields(loggerFields).Errorf("failed to fetch image from tweet, err: %v", err)
 		return nil, err
 	}
 	if !resp.IsSuccess() {

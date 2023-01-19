@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"github.com/nekomeowww/perobot/internal/bots/telegram/dispatcher"
+	"github.com/nekomeowww/perobot/internal/bots/telegram/handlers/pixiv2images"
 	"github.com/nekomeowww/perobot/internal/bots/telegram/handlers/tweet2images"
 	"github.com/nekomeowww/perobot/pkg/handler"
 	"go.uber.org/fx"
@@ -11,6 +12,7 @@ func NewModules() fx.Option {
 	return fx.Options(
 		fx.Provide(NewHandlers()),
 		fx.Provide(tweet2images.NewHandler()),
+		fx.Provide(pixiv2images.NewHandler()),
 	)
 }
 
@@ -19,6 +21,7 @@ type NewHandlersParam struct {
 
 	Dispatcher          *dispatcher.Dispatcher
 	Tweet2ImagesHandler *tweet2images.Handler
+	Pixiv2ImagesHandler *pixiv2images.Handler
 }
 
 type Handlers struct {
@@ -35,6 +38,7 @@ func NewHandlers() func(param NewHandlersParam) *Handlers {
 			MessageHandlers: []handler.HandleFunc{},
 			ChannelPostHandlers: []handler.HandleFunc{
 				param.Tweet2ImagesHandler.HandleChannelPostTweetToImages,
+				param.Pixiv2ImagesHandler.HandleChannelPostPixivToImages,
 			},
 		}
 	}

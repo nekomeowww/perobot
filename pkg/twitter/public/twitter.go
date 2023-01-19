@@ -3,23 +3,39 @@ package twitter_public
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/imroc/req/v3"
 	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
 
+	"github.com/nekomeowww/perobot/pkg/options"
 	twitter_public_types "github.com/nekomeowww/perobot/pkg/twitter/public/types"
 )
+
+type ClientOptions struct {
+	Logger *logrus.Entry
+}
+
+func WithLogger(logger *logrus.Entry) options.CallOptions[ClientOptions] {
+	return options.NewCallOptions(func(o *ClientOptions) {
+		o.Logger = logger
+	})
+}
 
 type Client struct {
 	reqClient *req.Client
 
+	logger               *logrus.Entry
 	guestToken           string
 	guestTokenObtainedAt time.Time
 }
 
-func NewClient() (*Client, error) {
+func NewClient(callOpts ...options.CallOptions[ClientOptions]) (*Client, error) {
+	opts := options.ApplyCallOptions(callOpts, ClientOptions{
+		Logger: logrus.NewEntry(logrus.New()),
+	})
+
 	c := req.
 		C().
 		SetBaseURL("https://api.twitter.com").
@@ -29,6 +45,7 @@ func NewClient() (*Client, error) {
 		SetCommonBearerAuthToken(twitter_public_types.GuestBearerToken)
 	client := &Client{
 		reqClient: c,
+		logger:    opts.Logger,
 	}
 
 	return client, nil
@@ -44,12 +61,12 @@ func (c *Client) ActivateGuest() error {
 			SetResult(&guestActivateResp).
 			Post("/1.1/guest/activate.json")
 		if err != nil {
-			log.Println("failed to activate Twitter guest token, retrying...")
+			c.logger.WithError(err).Error("failed to activate Twitter guest token, retrying...")
 			return err
 		}
 		if !resp.IsSuccess() {
-			log.Println("failed to activate Twitter guest token, retrying...")
-			return fmt.Errorf("request to %s failed: status code: %d, reason: %v", resp.Request.URL, resp.StatusCode, resp)
+			c.logger.Error("failed to activate Twitter guest token, retrying...")
+			return fmt.Errorf("request to %s failed: status code: %d", resp.Request.URL, resp.StatusCode)
 		}
 
 		return nil
@@ -89,10 +106,12 @@ func (c *Client) TweetDetail(tweetID string) (*twitter_public_types.TweetDetailR
 		SetResult(&tweetDetailResp).
 		Get("/graphql/HQ_gjq7zDNvSiJOCSkwUEw/TweetDetail")
 	if err != nil {
+		c.logger.WithError(err).Error("failed to get tweet detail")
 		return nil, err
 	}
 	if !resp.IsSuccess() {
-		return nil, fmt.Errorf("request to %s failed: status code: %d, reason: %v", resp.Request.URL, resp.StatusCode, resp)
+		c.logger.Errorf("failed to get tweet detail, status code: %d, full request: %s", resp.StatusCode, resp.Dump())
+		return nil, fmt.Errorf("request to %s failed: status code: %d", resp.Request.URL, resp.StatusCode)
 	}
 
 	return &tweetDetailResp, nil

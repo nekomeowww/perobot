@@ -15,7 +15,9 @@ var h *Handler
 
 func TestMain(m *testing.M) {
 	logger := lib.NewLogger()()
-	twitterPublic, err := thirdparty.NewTwitterPublic()()
+	twitterPublic, err := thirdparty.NewTwitterPublic()(thirdparty.NewTwitterPublicParam{
+		Logger: logger,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}

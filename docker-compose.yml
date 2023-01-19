@@ -1,0 +1,9 @@
+version: "3.9"
+
+services:
+  hyphen:
+    image: nekomeowww/perobot:latest
+    restart: always
+    environment:
+      - TELEGRAM_BOT_TOKEN=<Telegram Bot API Token>
+      - PIXIV_PHPSESSID=<Pixiv Cookie>

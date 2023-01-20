@@ -103,8 +103,8 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	}
 
 	tweetContentInMarkdown := tweet.DisplayTextWithURLsMappedEmbeddedInHTML()
-	if tweetContentInMarkdown == "" {
-		tweetContentInMarkdown = tweetRawURL
+	if tweetContentInMarkdown != "" {
+		tweetContentInMarkdown += "\n\n"
 	}
 
 	imageLinks := tweet.ExtendedPhotoURLs()
@@ -136,7 +136,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		})
 		if i == 0 {
 			inputMediaPhoto.ParseMode = "HTML"
-			inputMediaPhoto.Caption = fmt.Sprintf("%s\n\nBy: %s\nSource: %s",
+			inputMediaPhoto.Caption = fmt.Sprintf("%sBy: %s\n[Source](%s)",
 				tweetContentInMarkdown,
 				tweetAuthorInfo,
 				tweetRawURL,

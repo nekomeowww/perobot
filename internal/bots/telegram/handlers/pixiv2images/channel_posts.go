@@ -156,8 +156,8 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	}
 
 	illustContentInMarkdown := illustDetailResp.Body.Title
-	if illustContentInMarkdown == "" {
-		illustContentInMarkdown = pixivIllustRawURL
+	if illustContentInMarkdown != "" {
+		illustContentInMarkdown += "\n\n"
 	}
 
 	illustContentInMarkdown = strings.ReplaceAll(illustContentInMarkdown, "<br />", "\n")
@@ -174,7 +174,7 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		})
 		if i == 0 {
 			inputMediaPhoto.ParseMode = "HTML"
-			inputMediaPhoto.Caption = fmt.Sprintf("%s\n\nBy: %s\nSource: %s",
+			inputMediaPhoto.Caption = fmt.Sprintf("%sBy: %s\n[Source](%s)",
 				illustContentInMarkdown,
 				illustAuthorInfo,
 				pixivIllustRawURL,

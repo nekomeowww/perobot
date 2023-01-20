@@ -136,7 +136,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		})
 		if i == 0 {
 			inputMediaPhoto.ParseMode = "HTML"
-			inputMediaPhoto.Caption = fmt.Sprintf("%sBy: %s\n[Source](%s)",
+			inputMediaPhoto.Caption = fmt.Sprintf(`%sBy: %s`+"\n\n"+`<a href="%s">Source</a>`,
 				tweetContentInMarkdown,
 				tweetAuthorInfo,
 				tweetRawURL,

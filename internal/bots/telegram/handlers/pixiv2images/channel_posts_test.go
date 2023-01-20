@@ -17,6 +17,7 @@ var h *Handler
 
 func TestMain(m *testing.M) {
 	config := configs.NewConfig()()
+	config.PixivPHPSESSID = "ABCD"
 	logger := lib.NewLogger()()
 	pixivPublic, err := thirdparty.NewPixivPublic()(thirdparty.NewPixivPublicParam{
 		Config: config,
@@ -36,6 +37,12 @@ func TestMain(m *testing.M) {
 
 func TestIllustIDFromText(t *testing.T) {
 	artworkID := IllustIDFromText("https://www.pixiv.net/artworks/1234")
+	assert.Equal(t, "1234", artworkID)
+
+	artworkID = IllustIDFromText("https://www.pixiv.net/en/artworks/1234")
+	assert.Equal(t, "1234", artworkID)
+
+	artworkID = IllustIDFromText("https://www.pixiv.net/jp/artworks/1234")
 	assert.Equal(t, "1234", artworkID)
 }
 

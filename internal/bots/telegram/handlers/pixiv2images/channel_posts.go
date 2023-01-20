@@ -222,14 +222,14 @@ func (h *Handler) fetchPixivIllustImage(link string, loggerFields logrus.Fields)
 }
 
 var (
-	PixivIllustIDRegexp = regexp.MustCompile(`https://www.pixiv.net/artworks/(\d+)`)
+	PixivIllustIDRegexp = regexp.MustCompile(`https://www.pixiv.net/(.*\/)?artworks/(\d+)`)
 )
 
 func IllustIDFromText(text string) string {
 	matches := PixivIllustIDRegexp.FindStringSubmatch(text)
-	if len(matches) != 2 {
+	if len(matches) != 3 {
 		return ""
 	}
 
-	return matches[1]
+	return matches[2]
 }

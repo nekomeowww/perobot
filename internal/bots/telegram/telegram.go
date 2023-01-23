@@ -4,6 +4,7 @@ import (
 	"context"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/gookit/color"
 	"go.uber.org/fx"
 
 	"github.com/nekomeowww/perobot/internal/bots/telegram/dispatcher"
@@ -59,7 +60,7 @@ func NewBot() func(param NewBotParam) (*Bot, error) {
 			BotAPI:     b,
 			Logger:     param.Logger,
 			Dispatcher: param.Dispatcher,
-			closeChan:  make(chan struct{}),
+			closeChan:  make(chan struct{}, 1),
 		}
 
 		param.Lifecycle.Append(fx.Hook{
@@ -69,7 +70,7 @@ func NewBot() func(param NewBotParam) (*Bot, error) {
 			},
 		})
 
-		param.Logger.Infof("authorized on bot @%s", bot.Self.UserName)
+		param.Logger.Infof("Authorized as bot @%s", bot.Self.UserName)
 		param.Handlers.RegisterHandlers()
 		return bot, nil
 	}
@@ -90,6 +91,40 @@ func (b *Bot) StopPull(ctx context.Context) {
 	}, utils.WithContext(ctx))
 }
 
+func (b *Bot) MapChatTypeToChineseText(chatType string) string {
+	switch chatType {
+	case "private":
+		return "私聊"
+	case "group":
+		return "群组"
+	case "supergroup":
+		return "超级群组"
+	case "channel":
+		return "频道"
+	default:
+		return "未知"
+	}
+}
+
+func (b *Bot) MapMemberStatusToChineseText(memberStatus string) string {
+	switch memberStatus {
+	case "creator":
+		return "创建者"
+	case "administrator":
+		return "管理员"
+	case "member":
+		return "成员"
+	case "restricted":
+		return "受限成员"
+	case "left":
+		return "已离开"
+	case "kicked":
+		return "已被踢出"
+	default:
+		return "未知"
+	}
+}
+
 func (b *Bot) PullUpdates() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -103,12 +138,57 @@ func (b *Bot) PullUpdates() {
 
 		select {
 		case update := <-updates:
-			if update.Message != nil { // If we got a message
-				b.Logger.Infof("Message [%s] %s", update.Message.From.UserName, update.Message.Text)
+			if update.Message != nil {
+				if update.Message.Chat.Type == "private" {
+					b.Logger.Infof("[消息｜%s] %s (%s): %s",
+						b.MapChatTypeToChineseText(update.Message.Chat.Type),
+						update.Message.From.UserName,
+						color.FgYellow.Render(update.Message.From.ID),
+						update.Message.Text,
+					)
+				} else {
+					b.Logger.Infof("[消息｜%s] [%s (%s)] %s (%s): %s",
+						b.MapChatTypeToChineseText(update.Message.Chat.Type),
+						color.FgGreen.Render(update.Message.Chat.Title),
+						color.FgYellow.Render(update.Message.Chat.ID),
+						update.Message.From.UserName,
+						color.FgYellow.Render(update.Message.From.ID),
+						update.Message.Text,
+					)
+				}
+
 				b.Dispatcher.DispatchMessage(handler.NewContext(b.BotAPI, update))
 			}
+			if update.MyChatMember != nil {
+				oldMemberStatus := update.MyChatMember.OldChatMember.Status
+				newMemberStatus := update.MyChatMember.NewChatMember.Status
+
+				b.Logger.Infof("[我的成员信息更新｜%s] [%s (%s)] %s (%s): 成员状态自 %s 变更为 %s",
+					b.MapChatTypeToChineseText(update.MyChatMember.Chat.Type),
+					color.FgGreen.Render(update.MyChatMember.Chat.Title),
+					color.FgYellow.Render(update.MyChatMember.Chat.ID),
+					update.MyChatMember.From.UserName,
+					color.FgYellow.Render(update.MyChatMember.From.ID),
+					b.MapMemberStatusToChineseText(oldMemberStatus),
+					b.MapMemberStatusToChineseText(newMemberStatus),
+				)
+				switch update.MyChatMember.Chat.Type {
+				case "channel":
+					if newMemberStatus != "administrator" {
+						b.Logger.Infof("已退出频道 %s (%d)", update.MyChatMember.Chat.Title, update.MyChatMember.Chat.ID)
+						continue
+					}
+
+					b.Logger.Infof("已加入频道 %s (%d)", update.MyChatMember.Chat.Title, update.MyChatMember.Chat.ID)
+				}
+			}
 			if update.ChannelPost != nil {
-				b.Logger.Infof("Channel Post [%s] %s", update.ChannelPost.Chat.Title, update.ChannelPost.Text)
+				b.Logger.Infof("[频道消息｜%s] [%s (%s)]: %s",
+					b.MapChatTypeToChineseText(update.ChannelPost.Chat.Type),
+					color.FgGreen.Render(update.ChannelPost.Chat.Title),
+					color.FgYellow.Render(update.ChannelPost.Chat.ID),
+					update.ChannelPost.Text,
+				)
 				b.Dispatcher.DispatchChannelPost(handler.NewContext(b.BotAPI, update))
 			}
 		case <-b.closeChan:

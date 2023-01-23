@@ -12,13 +12,14 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/imroc/req/v3"
+	"github.com/samber/lo"
+	"github.com/sirupsen/logrus"
+	"go.uber.org/fx"
+
 	"github.com/nekomeowww/perobot/internal/models/twitter"
 	"github.com/nekomeowww/perobot/pkg/handler"
 	"github.com/nekomeowww/perobot/pkg/logger"
 	twitter_public_types "github.com/nekomeowww/perobot/pkg/twitter/public/types"
-	"github.com/samber/lo"
-	"github.com/sirupsen/logrus"
-	"go.uber.org/fx"
 )
 
 type NewHandlerParam struct {
@@ -94,22 +95,10 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return
 	}
 
-	tweetAuthor := tweet.User()
-	var tweetAuthorInfo string
-	if tweetAuthor == nil {
-		tweetAuthorInfo = "未知"
-	} else {
-		tweetAuthorInfo = fmt.Sprintf(`%s <a href="https://twitter.com/%s">@%s</a>`, tweetAuthor.Name, tweetAuthor.ScreenName, tweetAuthor.ScreenName)
-	}
-
-	tweetContentInMarkdown := tweet.DisplayTextWithURLsMappedEmbeddedInHTML()
-	if tweetContentInMarkdown != "" {
-		tweetContentInMarkdown += "\n\n"
-	}
-
 	imageLinks := tweet.ExtendedPhotoURLs()
 	if len(imageLinks) == 0 {
-		h.Logger.WithField("tweet_id", tweetID).Warn("no images found in tweet")
+		h.Logger.WithField("tweet_id", tweetID).Warn("no images found in tweet, if tweet does contain images, then it is probably because the image contains adult content")
+		return
 	}
 
 	h.Logger.WithFields(loggerFields).Info("tweet found, fetching images...")
@@ -123,8 +112,24 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 
 		images = append(images, imageBuffer)
 	}
+	if len(images) == 0 {
+		h.Logger.WithFields(loggerFields).Warn("no images fetched, probably because of rate limit")
+		return
+	}
 
-	h.Logger.WithFields(loggerFields).Info("images fetched, sending to telegram...")
+	h.Logger.WithFields(loggerFields).Infof("%d images fetched, sending to telegram...", len(images))
+
+	tweetAuthor := tweet.User()
+	var tweetAuthorInfo string
+	if tweetAuthor == nil {
+		tweetAuthorInfo = "未知"
+	} else {
+		tweetAuthorInfo = fmt.Sprintf(`%s <a href="https://twitter.com/%s">@%s</a>`, tweetAuthor.Name, tweetAuthor.ScreenName, tweetAuthor.ScreenName)
+	}
+	tweetAuthorInfo += ":\n\n"
+
+	tweetContentInMarkdown := tweet.DisplayTextWithURLsMappedEmbeddedInHTML()
+
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,
 		Media:  make([]interface{}, 0, len(images)),
@@ -136,9 +141,9 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		})
 		if i == 0 {
 			inputMediaPhoto.ParseMode = "HTML"
-			inputMediaPhoto.Caption = fmt.Sprintf(`%sBy: %s`+"\n\n"+`<a href="%s">Source</a>`,
-				tweetContentInMarkdown,
+			inputMediaPhoto.Caption = fmt.Sprintf(`%s%s`+"\n\n"+`来自 <a href="%s">Twitter</a>`,
 				tweetAuthorInfo,
+				tweetContentInMarkdown,
 				tweetRawURL,
 			)
 			if inputMediaPhoto.Caption == "" {
@@ -157,7 +162,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Info("images sent to telegram")
+	h.Logger.WithFields(loggerFields).Infof("%d images sent to telegram", len(images))
 
 	// 删除原始推文
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))

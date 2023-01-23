@@ -135,6 +135,10 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	urls := lo.Map(urlItems, func(item *pixiv_public_types.IllustDetailPagesRespItem, _ int) string {
 		return item.Urls.Original
 	})
+	if len(urls) == 0 {
+		h.Logger.WithFields(loggerFields).Warn("no image found")
+		return
+	}
 
 	urls = lo.Slice(urls, 0, 4)
 	h.Logger.WithFields(loggerFields).Info("illust found, fetching images...")
@@ -148,6 +152,8 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		images = append(images, imageBuffer)
 	}
 
+	h.Logger.WithFields(loggerFields).Infof("%d images fetched, sending to telegram...", len(images))
+
 	var illustAuthorInfo string
 	if illustDetailResp.Body.UserName == "" {
 		illustAuthorInfo = "未知"
@@ -155,14 +161,11 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		illustAuthorInfo = fmt.Sprintf(`<a href="https://www.pixiv.net/users/%s">%s</a>`, illustDetailResp.Body.UserID, illustDetailResp.Body.UserName)
 	}
 
-	illustContentInMarkdown := illustDetailResp.Body.Title
-	if illustContentInMarkdown != "" {
-		illustContentInMarkdown += "\n\n"
-	}
+	illustAuthorInfo += ":\n\n"
 
+	illustContentInMarkdown := illustDetailResp.Body.Title
 	illustContentInMarkdown = strings.ReplaceAll(illustContentInMarkdown, "<br />", "\n")
 
-	h.Logger.WithFields(loggerFields).Info("images fetched, sending to telegram...")
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,
 		Media:  make([]interface{}, 0, len(images)),
@@ -174,9 +177,9 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		})
 		if i == 0 {
 			inputMediaPhoto.ParseMode = "HTML"
-			inputMediaPhoto.Caption = fmt.Sprintf(`%sBy: %s`+"\n\n"+`<a href="%s">Source</a>`,
-				illustContentInMarkdown,
+			inputMediaPhoto.Caption = fmt.Sprintf(`%s%s`+"\n\n"+`来自 <a href="%s">Pixiv</a>`,
 				illustAuthorInfo,
+				illustContentInMarkdown,
 				pixivIllustRawURL,
 			)
 			if inputMediaPhoto.Caption == "" {
@@ -195,7 +198,7 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Info("images sent to telegram")
+	h.Logger.WithFields(loggerFields).Infof("%d images sent to telegram", len(images))
 
 	// 删除原始 Pixiv 消息
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))

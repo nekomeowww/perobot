@@ -2,9 +2,11 @@ package telegram
 
 import (
 	"context"
+	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/gookit/color"
+	"github.com/samber/lo"
 	"go.uber.org/fx"
 
 	"github.com/nekomeowww/perobot/internal/bots/telegram/dispatcher"
@@ -139,27 +141,49 @@ func (b *Bot) PullUpdates() {
 		select {
 		case update := <-updates:
 			if update.Message != nil {
+				identityStrings := make([]string, 0)
+				if update.Message.From.FirstName != "" {
+					identityStrings = append(identityStrings, update.Message.From.FirstName)
+				}
+				if update.Message.From.LastName != "" {
+					identityStrings = append(identityStrings, update.Message.From.LastName)
+				}
+				if update.Message.From.UserName != "" {
+					identityStrings = append(identityStrings, "@"+update.Message.From.UserName)
+				}
+
 				if update.Message.Chat.Type == "private" {
 					b.Logger.Infof("[消息｜%s] %s (%s): %s",
 						b.MapChatTypeToChineseText(update.Message.Chat.Type),
-						update.Message.From.UserName,
+						strings.Join(identityStrings, " "),
 						color.FgYellow.Render(update.Message.From.ID),
-						update.Message.Text,
+						lo.Ternary(update.Message.Text == "", "<empty or contains medias>", update.Message.Text),
 					)
 				} else {
 					b.Logger.Infof("[消息｜%s] [%s (%s)] %s (%s): %s",
 						b.MapChatTypeToChineseText(update.Message.Chat.Type),
 						color.FgGreen.Render(update.Message.Chat.Title),
 						color.FgYellow.Render(update.Message.Chat.ID),
-						update.Message.From.UserName,
+						strings.Join(identityStrings, " "),
 						color.FgYellow.Render(update.Message.From.ID),
-						update.Message.Text,
+						lo.Ternary(update.Message.Text == "", "<empty or contains medias>", update.Message.Text),
 					)
 				}
 
 				b.Dispatcher.DispatchMessage(handler.NewContext(b.BotAPI, update))
 			}
 			if update.MyChatMember != nil {
+				identityStrings := make([]string, 0)
+				if update.MyChatMember.From.FirstName != "" {
+					identityStrings = append(identityStrings, update.MyChatMember.From.FirstName)
+				}
+				if update.MyChatMember.From.LastName != "" {
+					identityStrings = append(identityStrings, update.MyChatMember.From.LastName)
+				}
+				if update.MyChatMember.From.UserName != "" {
+					identityStrings = append(identityStrings, "@"+update.MyChatMember.From.UserName)
+				}
+
 				oldMemberStatus := update.MyChatMember.OldChatMember.Status
 				newMemberStatus := update.MyChatMember.NewChatMember.Status
 
@@ -167,7 +191,7 @@ func (b *Bot) PullUpdates() {
 					b.MapChatTypeToChineseText(update.MyChatMember.Chat.Type),
 					color.FgGreen.Render(update.MyChatMember.Chat.Title),
 					color.FgYellow.Render(update.MyChatMember.Chat.ID),
-					update.MyChatMember.From.UserName,
+					strings.Join(identityStrings, " "),
 					color.FgYellow.Render(update.MyChatMember.From.ID),
 					b.MapMemberStatusToChineseText(oldMemberStatus),
 					b.MapMemberStatusToChineseText(newMemberStatus),
@@ -179,6 +203,16 @@ func (b *Bot) PullUpdates() {
 						continue
 					}
 
+					_, err := b.BotAPI.GetChat(tgbotapi.ChatInfoConfig{
+						ChatConfig: tgbotapi.ChatConfig{
+							ChatID: update.MyChatMember.Chat.ID,
+						},
+					})
+					if err != nil {
+						b.Logger.Error(err)
+						continue
+					}
+
 					b.Logger.Infof("已加入频道 %s (%d)", update.MyChatMember.Chat.Title, update.MyChatMember.Chat.ID)
 				}
 			}
@@ -187,7 +221,7 @@ func (b *Bot) PullUpdates() {
 					b.MapChatTypeToChineseText(update.ChannelPost.Chat.Type),
 					color.FgGreen.Render(update.ChannelPost.Chat.Title),
 					color.FgYellow.Render(update.ChannelPost.Chat.ID),
-					update.ChannelPost.Text,
+					lo.Ternary(update.ChannelPost.Text == "", "<empty or contains medias>", update.ChannelPost.Text),
 				)
 				b.Dispatcher.DispatchChannelPost(handler.NewContext(b.BotAPI, update))
 			}

@@ -34,8 +34,11 @@ type Handlers struct {
 func NewHandlers() func(param NewHandlersParam) *Handlers {
 	return func(param NewHandlersParam) *Handlers {
 		return &Handlers{
-			Dispatcher:      param.Dispatcher,
-			MessageHandlers: []handler.HandleFunc{},
+			Dispatcher: param.Dispatcher,
+			MessageHandlers: []handler.HandleFunc{
+				param.Tweet2ImagesHandler.HandleMessageAutomaticForwardedFromLinkedChannel,
+				param.Pixiv2ImagesHandler.HandleMessageAutomaticForwardedFromLinkedChannel,
+			},
 			ChannelPostHandlers: []handler.HandleFunc{
 				param.Tweet2ImagesHandler.HandleChannelPostTweetToImages,
 				param.Pixiv2ImagesHandler.HandleChannelPostPixivToImages,

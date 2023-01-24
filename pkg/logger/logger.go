@@ -97,13 +97,17 @@ type Fields logrus.Fields
 // call Debug, Info, Warn, Error, Fatal or Panic. It only creates a log entry.
 // If you want multiple fields, use `WithFields`.
 func (l *Logger) WithField(key string, value interface{}) *logrus.Entry {
-	return logrus.NewEntry(l.Logger).WithField(key, value)
+	entry := logrus.NewEntry(l.Logger)
+	SetCallFrame(entry, l.namespace, 1)
+	return entry.WithField(key, value)
 }
 
 // WithFields adds a struct of fields to the log entry. All it does is call
 // `WithField` for each `Field`.
 func (l *Logger) WithFields(fields logrus.Fields) *logrus.Entry {
-	return logrus.NewEntry(l.Logger).WithFields(fields)
+	entry := logrus.NewEntry(l.Logger)
+	SetCallFrame(entry, l.namespace, 1)
+	return entry.WithFields(fields)
 }
 
 // SetCallFrame 设定调用栈

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -29,8 +30,9 @@ type NewHandlerParam struct {
 }
 
 type Handler struct {
-	Logger *logger.Logger
-	Pixiv  *thirdparty.PixivPublic
+	Exchange sync.Map
+	Logger   *logger.Logger
+	Pixiv    *thirdparty.PixivPublic
 
 	ReqClient *req.Client
 }
@@ -80,6 +82,7 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		"pixiv_illust_id":  illustID,
 		"pixiv_illust_url": pixivIllustRawURL,
 		"chat_id":          c.Update.ChannelPost.Chat.ID,
+		"chat_title":       c.Update.ChannelPost.Chat.Title,
 	}
 
 	var illustDetailResp *pixiv_public_types.IllustDetailResp
@@ -161,20 +164,23 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		illustAuthorInfo = fmt.Sprintf(`<a href="https://www.pixiv.net/users/%s">%s</a>`, illustDetailResp.Body.UserID, illustDetailResp.Body.UserName)
 	}
 
-	illustAuthorInfo += ":\n\n"
-
 	illustContentInMarkdown := illustDetailResp.Body.Title
 	illustContentInMarkdown = strings.ReplaceAll(illustContentInMarkdown, "<br />", "\n")
+	if illustContentInMarkdown != "" {
+		illustContentInMarkdown += ":\n\n"
+	}
 
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,
 		Media:  make([]interface{}, 0, len(images)),
 	}
 	for i, image := range images {
-		inputMediaPhoto := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{
+		file := tgbotapi.FileBytes{
 			Name:  fmt.Sprintf("%s-%s", illustID, filepath.Base(urls[i])),
 			Bytes: image.Bytes(),
-		})
+		}
+
+		inputMediaPhoto := tgbotapi.NewInputMediaPhoto(file)
 		if i == 0 {
 			inputMediaPhoto.ParseMode = "HTML"
 			inputMediaPhoto.Caption = fmt.Sprintf(`%s%s`+"\n\n"+`来自 <a href="%s">Pixiv</a>`,
@@ -186,19 +192,21 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 				inputMediaPhoto.Caption = c.Update.ChannelPost.Text
 			}
 
-			h.Logger.Debugf("new images message with caption: %s", inputMediaPhoto.Caption)
+			h.Logger.Debugf("created a new input media photo with name: %s, size: %d, and caption: %s", file.Name, len(file.Bytes), inputMediaPhoto.Caption)
+		} else {
+			h.Logger.Debugf("created a new input media photo with name: %s, and size: %d", file.Name, len(file.Bytes))
 		}
 
 		mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaPhoto)
 	}
 
-	_, err = c.Bot.SendMediaGroup(mediaGroupConfig)
+	messages, err := c.Bot.SendMediaGroup(mediaGroupConfig)
 	if err != nil {
 		h.Logger.Error(err)
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Infof("%d images sent to telegram", len(images))
+	h.Logger.WithFields(loggerFields).Infof("%d images sent to channel", len(images))
 
 	// 删除原始 Pixiv 消息
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))
@@ -206,6 +214,25 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		h.Logger.Error(err)
 		return
 	}
+
+	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, illustID, illustDetailResp.Body.UserName, images, urls)
+}
+
+func (h *Handler) assignExchanges(chatID int64, messageID int, illustID string, author string, images []*bytes.Buffer, urls []string) {
+	baseKey := fmt.Sprintf("key/pixiv/%d/%d", chatID, messageID)
+	h.Exchange.Store(baseKey, illustID)
+	h.Exchange.Store(baseKey+"/author", author)
+	h.Exchange.Store(baseKey+"/images", images)
+	h.Exchange.Store(baseKey+"/images/links", urls)
+}
+
+func (h *Handler) cleanupExchanges(chatID int64, messageID int) {
+	baseKey := fmt.Sprintf("key/pixiv/%d/%d", chatID, messageID)
+	h.Exchange.Delete(baseKey)
+	h.Exchange.Delete(baseKey + "/author")
+	h.Exchange.Delete(baseKey + "/images")
+	h.Exchange.Delete(baseKey + "/images/links")
+	h.Exchange.Delete(baseKey + "/processing")
 }
 
 func (h *Handler) fetchPixivIllustImage(link string, loggerFields logrus.Fields) (*bytes.Buffer, error) {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -30,6 +31,8 @@ type NewHandlerParam struct {
 }
 
 type Handler struct {
+	Exchange sync.Map
+
 	Logger  *logger.Logger
 	Twitter *twitter.Model
 
@@ -69,9 +72,10 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	}
 
 	loggerFields := logrus.Fields{
-		"tweet_id":  tweetID,
-		"tweet_url": tweetRawURL,
-		"chat_id":   c.Update.ChannelPost.Chat.ID,
+		"tweet_id":   tweetID,
+		"tweet_url":  tweetRawURL,
+		"chat_id":    c.Update.ChannelPost.Chat.ID,
+		"chat_title": c.Update.ChannelPost.Chat.Title,
 	}
 
 	var tweet *twitter_public_types.TweetResultsResult
@@ -126,19 +130,23 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	} else {
 		tweetAuthorInfo = fmt.Sprintf(`%s <a href="https://twitter.com/%s">@%s</a>`, tweetAuthor.Name, tweetAuthor.ScreenName, tweetAuthor.ScreenName)
 	}
-	tweetAuthorInfo += ":\n\n"
 
 	tweetContentInMarkdown := tweet.DisplayTextWithURLsMappedEmbeddedInHTML()
+	if tweetContentInMarkdown != "" {
+		tweetContentInMarkdown += ":\n\n"
+	}
 
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,
 		Media:  make([]interface{}, 0, len(images)),
 	}
 	for i, image := range images {
-		inputMediaPhoto := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{
+		file := tgbotapi.FileBytes{
 			Name:  fmt.Sprintf("%s-%s", tweetID, filepath.Base(imageLinks[i])),
 			Bytes: image.Bytes(),
-		})
+		}
+
+		inputMediaPhoto := tgbotapi.NewInputMediaPhoto(file)
 		if i == 0 {
 			inputMediaPhoto.ParseMode = "HTML"
 			inputMediaPhoto.Caption = fmt.Sprintf(`%s%s`+"\n\n"+`来自 <a href="%s">Twitter</a>`,
@@ -150,19 +158,21 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 				inputMediaPhoto.Caption = c.Update.ChannelPost.Text
 			}
 
-			h.Logger.Debugf("new images message with caption: %s", inputMediaPhoto.Caption)
+			h.Logger.Debugf("created a new input media photo with name: %s, size: %d, and caption: %s", file.Name, len(file.Bytes), inputMediaPhoto.Caption)
+		} else {
+			h.Logger.Debugf("created a new input media photo with name: %s, and size: %d", file.Name, len(file.Bytes))
 		}
 
 		mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaPhoto)
 	}
 
-	_, err = c.Bot.SendMediaGroup(mediaGroupConfig)
+	messages, err := c.Bot.SendMediaGroup(mediaGroupConfig)
 	if err != nil {
 		h.Logger.Error(err)
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Infof("%d images sent to telegram", len(images))
+	h.Logger.WithFields(loggerFields).Infof("%d images sent to channel", len(images))
 
 	// 删除原始推文
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))
@@ -170,6 +180,25 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		h.Logger.Error(err)
 		return
 	}
+
+	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, tweetID, tweetAuthor.ScreenName, images, imageLinks)
+}
+
+func (h *Handler) assignExchanges(chatID int64, messageID int, tweetID string, author string, images []*bytes.Buffer, imageLinks []string) {
+	baseKey := fmt.Sprintf("key/tweet/%d/%d", chatID, messageID)
+	h.Exchange.Store(baseKey, tweetID)
+	h.Exchange.Store(baseKey+"/author", author)
+	h.Exchange.Store(baseKey+"/images", images)
+	h.Exchange.Store(baseKey+"/images/links", imageLinks)
+}
+
+func (h *Handler) cleanupExchanges(chatID int64, messageID int) {
+	baseKey := fmt.Sprintf("key/tweet/%d/%d", chatID, messageID)
+	h.Exchange.Delete(baseKey)
+	h.Exchange.Delete(baseKey + "/author")
+	h.Exchange.Delete(baseKey + "/images")
+	h.Exchange.Delete(baseKey + "/images/links")
+	h.Exchange.Delete(baseKey + "/processing")
 }
 
 var (

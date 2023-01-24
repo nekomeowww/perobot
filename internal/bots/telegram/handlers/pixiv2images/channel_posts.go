@@ -167,7 +167,7 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	illustContentInMarkdown := illustDetailResp.Body.Title
 	illustContentInMarkdown = strings.ReplaceAll(illustContentInMarkdown, "<br />", "\n")
 	if illustContentInMarkdown != "" {
-		illustContentInMarkdown += ":\n\n"
+		illustContentInMarkdown = "：\n\n" + illustContentInMarkdown
 	}
 
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
@@ -206,6 +206,7 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		return
 	}
 
+	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, illustID, illustDetailResp.Body.UserName, images, urls)
 	h.Logger.WithFields(loggerFields).Infof("%d images sent to channel", len(images))
 
 	// 删除原始 Pixiv 消息
@@ -214,8 +215,6 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		h.Logger.Error(err)
 		return
 	}
-
-	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, illustID, illustDetailResp.Body.UserName, images, urls)
 }
 
 func (h *Handler) assignExchanges(chatID int64, messageID int, illustID string, author string, images []*bytes.Buffer, urls []string) {

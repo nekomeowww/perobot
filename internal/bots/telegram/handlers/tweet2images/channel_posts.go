@@ -128,12 +128,12 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	if tweetAuthor == nil {
 		tweetAuthorInfo = "未知"
 	} else {
-		tweetAuthorInfo = fmt.Sprintf(`%s <a href="https://twitter.com/%s">@%s</a>`, tweetAuthor.Name, tweetAuthor.ScreenName, tweetAuthor.ScreenName)
+		tweetAuthorInfo = fmt.Sprintf(`<a href="https://twitter.com/%s">%s (@%s)</a>`, tweetAuthor.ScreenName, tweetAuthor.Name, tweetAuthor.ScreenName)
 	}
 
 	tweetContentInMarkdown := tweet.DisplayTextWithURLsMappedEmbeddedInHTML()
 	if tweetContentInMarkdown != "" {
-		tweetContentInMarkdown += ":\n\n"
+		tweetContentInMarkdown = "：\n\n" + tweetContentInMarkdown
 	}
 
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
@@ -172,6 +172,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return
 	}
 
+	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, tweetID, tweetAuthor.ScreenName, images, imageLinks)
 	h.Logger.WithFields(loggerFields).Infof("%d images sent to channel", len(images))
 
 	// 删除原始推文
@@ -180,8 +181,6 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		h.Logger.Error(err)
 		return
 	}
-
-	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, tweetID, tweetAuthor.ScreenName, images, imageLinks)
 }
 
 func (h *Handler) assignExchanges(chatID int64, messageID int, tweetID string, author string, images []*bytes.Buffer, imageLinks []string) {

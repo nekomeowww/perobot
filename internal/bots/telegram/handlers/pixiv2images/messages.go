@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/disintegration/imaging"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -21,6 +22,9 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 	if c.Update.Message.ForwardFromChat == nil {
 		return
 	}
+
+	// 等待 ChannelPostPixivToImages 处理完毕并获取到 chat id 和 message id
+	time.Sleep(time.Second)
 
 	baseKey := fmt.Sprintf("key/pixiv/%d/%d", c.Update.Message.ForwardFromChat.ID, c.Update.Message.ForwardFromMessageID)
 	illustID, ok := h.Exchange.Load(baseKey)
@@ -59,7 +63,7 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		return
 	}
 
-	imagesRaw, ok := h.Exchange.Load(baseKey + "/images")
+	imagesRaw, ok := h.Exchange.Load(baseKey + "/images/original")
 	if !ok {
 		h.Logger.WithFields(loggerFields).Error("images not found")
 		return
@@ -71,7 +75,7 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		return
 	}
 
-	imageLinksRaw, ok := h.Exchange.Load(baseKey + "/images/links")
+	imageLinksRaw, ok := h.Exchange.Load(baseKey + "/images/urls")
 	if !ok {
 		h.Logger.WithFields(loggerFields).Error("image links not found")
 		return
@@ -79,7 +83,7 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 
 	imageLinks, ok := imageLinksRaw.([]string)
 	if !ok {
-		h.Logger.WithFields(loggerFields).Error("image links not found, incorrect type, type is not []string")
+		h.Logger.WithFields(loggerFields).Error("image url not found, incorrect type, type is not []string")
 		return
 	}
 
@@ -145,7 +149,7 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		}
 
 		inputMediaDocument := tgbotapi.NewInputMediaDocument(file)
-		h.Logger.Infof("created a new input media document with name: %s, and size: %d", file.Name, len(file.Bytes))
+		h.Logger.Debugf("created a new input media document with name: %s, and size: %d", file.Name, len(file.Bytes))
 
 		if thumbnailImages[i] != nil {
 			thumbFile := tgbotapi.FileBytes{
@@ -154,7 +158,7 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 			}
 
 			inputMediaDocument.Thumb = thumbFile
-			h.Logger.Infof("created a new input media document thumbnail with name: %s, and size: %d", thumbFile.Name, len(thumbFile.Bytes))
+			h.Logger.Debugf("created a new input media document thumbnail with name: %s, and size: %d", thumbFile.Name, len(thumbFile.Bytes))
 		}
 
 		mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaDocument)

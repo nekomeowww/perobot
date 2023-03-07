@@ -106,6 +106,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	}
 
 	h.Logger.WithFields(loggerFields).Info("tweet found, fetching images...")
+
 	originalImagesLinks := lo.Map(imageLinks, func(link string, _ int) string { return tweetImageTo4kImage(link) })
 	images := make([]*bytes.Buffer, 0, len(originalImagesLinks))
 	for _, link := range originalImagesLinks {

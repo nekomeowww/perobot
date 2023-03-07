@@ -132,30 +132,57 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	}
 
 	urlItems := lo.Filter(illustDetailPagesResp.Body, func(item *pixiv_public_types.IllustDetailPagesRespItem, _ int) bool {
-		return item.Urls.Original != ""
+		return item.Urls.Regular != "" && item.Urls.Original != ""
 	})
 
-	urls := lo.Map(urlItems, func(item *pixiv_public_types.IllustDetailPagesRespItem, _ int) string {
-		return item.Urls.Original
-	})
-	if len(urls) == 0 {
+	regularURLs := lo.Map(urlItems, func(item *pixiv_public_types.IllustDetailPagesRespItem, _ int) string { return item.Urls.Regular })
+	originalURLs := lo.Map(urlItems, func(item *pixiv_public_types.IllustDetailPagesRespItem, _ int) string { return item.Urls.Original })
+	if len(regularURLs) == 0 || len(originalURLs) == 0 {
 		h.Logger.WithFields(loggerFields).Warn("no image found")
 		return
 	}
 
-	urls = lo.Slice(urls, 0, 4)
-	h.Logger.WithFields(loggerFields).Info("illust found, fetching images...")
-	images := make([]*bytes.Buffer, 0, len(urls))
-	for _, link := range urls {
-		imageBuffer, err := h.fetchPixivIllustImage(link, loggerFields)
-		if err != nil {
-			continue
+	regularURLs = lo.Slice(regularURLs, 0, 4)
+	originalURLs = lo.Slice(originalURLs, 0, 4)
+
+	regularImages := make([]*bytes.Buffer, 0, len(regularURLs))
+	originalImages := make([]*bytes.Buffer, 0, len(originalURLs))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		h.Logger.WithFields(loggerFields).Info("fetching regular images...")
+
+		for _, url := range regularURLs {
+			imageBuffer, err := h.fetchPixivIllustImage(url, loggerFields)
+			if err != nil {
+				continue
+			}
+
+			regularImages = append(regularImages, imageBuffer)
 		}
 
-		images = append(images, imageBuffer)
-	}
+		wg.Done()
+	}()
 
-	h.Logger.WithFields(loggerFields).Infof("%d images fetched, sending to telegram...", len(images))
+	wg.Add(1)
+	go func() {
+		h.Logger.WithFields(loggerFields).Info("fetching original images...")
+
+		for _, url := range originalURLs {
+			imageBuffer, err := h.fetchPixivIllustImage(url, loggerFields)
+			if err != nil {
+				continue
+			}
+
+			originalImages = append(originalImages, imageBuffer)
+		}
+
+		wg.Done()
+	}()
+
+	wg.Wait()
+	h.Logger.WithFields(loggerFields).Infof("%d regular images, %d original images fetched, sending to telegram...", len(regularImages), len(originalImages))
 
 	var illustAuthorInfo string
 	if illustDetailResp.Body.UserName == "" {
@@ -165,18 +192,24 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	}
 
 	illustContentInMarkdown := illustDetailResp.Body.Title
-	illustContentInMarkdown = strings.ReplaceAll(illustContentInMarkdown, "<br />", "\n")
 	if illustContentInMarkdown != "" {
 		illustContentInMarkdown = "：\n\n" + illustContentInMarkdown
 	}
 
+	// 写入标签
+	tags := make([]string, 0, len(illustDetailResp.Body.Tags.Tags))
+	for _, tag := range illustDetailResp.Body.Tags.Tags {
+		tags = append(tags, fmt.Sprintf("#%s", tag.Tag))
+	}
+	illustContentInMarkdown += strings.Join(tags, " ")
+
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,
-		Media:  make([]interface{}, 0, len(images)),
+		Media:  make([]interface{}, 0, len(regularImages)),
 	}
-	for i, image := range images {
+	for i, image := range regularImages {
 		file := tgbotapi.FileBytes{
-			Name:  fmt.Sprintf("%s-%s", illustID, filepath.Base(urls[i])),
+			Name:  fmt.Sprintf("%s-%s", illustID, filepath.Base(regularURLs[i])),
 			Bytes: image.Bytes(),
 		}
 
@@ -206,8 +239,8 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		return
 	}
 
-	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, illustID, illustDetailResp.Body.UserName, images, urls)
-	h.Logger.WithFields(loggerFields).Infof("%d images sent to channel", len(images))
+	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, illustID, illustDetailResp.Body.UserName, regularImages, originalImages, regularURLs)
+	h.Logger.WithFields(loggerFields).Infof("%d images sent to channel", len(regularImages))
 
 	// 删除原始 Pixiv 消息
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))
@@ -217,20 +250,30 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	}
 }
 
-func (h *Handler) assignExchanges(chatID int64, messageID int, illustID string, author string, images []*bytes.Buffer, urls []string) {
+func (h *Handler) assignExchanges(
+	chatID int64,
+	messageID int,
+	illustID string,
+	author string,
+	regularImages []*bytes.Buffer,
+	originalImages []*bytes.Buffer,
+	urls []string,
+) {
 	baseKey := fmt.Sprintf("key/pixiv/%d/%d", chatID, messageID)
 	h.Exchange.Store(baseKey, illustID)
 	h.Exchange.Store(baseKey+"/author", author)
-	h.Exchange.Store(baseKey+"/images", images)
-	h.Exchange.Store(baseKey+"/images/links", urls)
+	h.Exchange.Store(baseKey+"/images/regular", regularImages)
+	h.Exchange.Store(baseKey+"/images/original", originalImages)
+	h.Exchange.Store(baseKey+"/images/urls", urls)
 }
 
 func (h *Handler) cleanupExchanges(chatID int64, messageID int) {
 	baseKey := fmt.Sprintf("key/pixiv/%d/%d", chatID, messageID)
 	h.Exchange.Delete(baseKey)
 	h.Exchange.Delete(baseKey + "/author")
-	h.Exchange.Delete(baseKey + "/images")
-	h.Exchange.Delete(baseKey + "/images/links")
+	h.Exchange.Delete(baseKey + "/images/regular")
+	h.Exchange.Delete(baseKey + "/images/original")
+	h.Exchange.Delete(baseKey + "/images/urls")
 	h.Exchange.Delete(baseKey + "/processing")
 }
 

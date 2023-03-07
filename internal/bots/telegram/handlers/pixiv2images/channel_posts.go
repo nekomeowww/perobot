@@ -14,8 +14,10 @@ import (
 	"github.com/imroc/req/v3"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
+	"github.com/sourcegraph/conc"
 	"go.uber.org/fx"
 
+	"github.com/nekomeowww/elapsing"
 	"github.com/nekomeowww/perobot/internal/thirdparty"
 	"github.com/nekomeowww/perobot/pkg/handler"
 	"github.com/nekomeowww/perobot/pkg/logger"
@@ -48,6 +50,26 @@ func NewHandler() func(param NewHandlerParam) *Handler {
 	}
 }
 
+func (h *Handler) fetchImage(
+	imageSlice []*bytes.Buffer,
+	imageSliceIndex int,
+	url string,
+	logEntry *logrus.Entry,
+	fc *elapsing.FuncCall,
+) func() {
+	return func() {
+		defer fc.Return()
+
+		imageBuffer, err := h.fetchPixivIllustImage(url, logEntry)
+		if err != nil {
+			return
+		}
+
+		imageSlice[imageSliceIndex] = imageBuffer
+		fc.StepEnds(elapsing.WithName("Fetch Image"))
+	}
+}
+
 func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	// 转发的消息不处理
 	if c.Update.ChannelPost.ForwardFrom != nil {
@@ -67,10 +89,13 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		// PASS
 	}
 
+	e := elapsing.New()
 	pixivIllustURL, err := url.Parse(c.Update.ChannelPost.Text)
 	if err != nil {
 		return
 	}
+
+	e.StepEnds(elapsing.WithName("Parse URL"))
 
 	pixivIllustRawURL := fmt.Sprintf("%s://%s%s", pixivIllustURL.Scheme, pixivIllustURL.Host, pixivIllustURL.Path)
 	illustID := IllustIDFromText(pixivIllustRawURL)
@@ -78,12 +103,14 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		return
 	}
 
-	loggerFields := logrus.Fields{
+	e.StepEnds(elapsing.WithName("Extract Pixiv Illust ID"))
+
+	loggerEntry := h.Logger.WithFields(logrus.Fields{
 		"pixiv_illust_id":  illustID,
 		"pixiv_illust_url": pixivIllustRawURL,
 		"chat_id":          c.Update.ChannelPost.Chat.ID,
 		"chat_title":       c.Update.ChannelPost.Chat.Title,
-	}
+	})
 
 	var illustDetailResp *pixiv_public_types.IllustDetailResp
 	_, _, err = lo.AttemptWithDelay(1, time.Second, func(index int, duration time.Duration) error {
@@ -98,17 +125,18 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		return nil
 	})
 	if err != nil {
-		h.Logger.WithFields(loggerFields).Errorf("failed to get pixiv illust detail, err: %v", err)
+		loggerEntry.Errorf("failed to get pixiv illust detail, err: %v", err)
 		return
 	}
 	if illustDetailResp == nil {
-		h.Logger.WithFields(loggerFields).Warn("pixiv illust detail not found")
+		loggerEntry.Warn("pixiv illust detail not found")
 		return
 	}
 	if illustDetailResp.Body == nil {
-		h.Logger.WithFields(loggerFields).Warn("pixiv illust detail body is nil")
+		loggerEntry.Warn("pixiv illust detail body is nil")
 		return
 	}
+	e.StepEnds(elapsing.WithName("Get Pixiv Illust Detail"))
 
 	var illustDetailPagesResp *pixiv_public_types.IllustDetailPagesResp
 	_, _, err = lo.AttemptWithDelay(1, time.Second, func(index int, duration time.Duration) error {
@@ -123,13 +151,14 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		return nil
 	})
 	if err != nil {
-		h.Logger.WithFields(loggerFields).Errorf("failed to get pixiv illust detail pages, err: %v", err)
+		loggerEntry.Errorf("failed to get pixiv illust detail pages, err: %v", err)
 		return
 	}
 	if illustDetailPagesResp == nil {
-		h.Logger.WithFields(loggerFields).Warn("pixiv illust detail pages not found")
+		loggerEntry.Warn("pixiv illust detail pages not found")
 		return
 	}
+	e.StepEnds(elapsing.WithName("Get Pixiv Illust Detail Pages"))
 
 	urlItems := lo.Filter(illustDetailPagesResp.Body, func(item *pixiv_public_types.IllustDetailPagesRespItem, _ int) bool {
 		return item.Urls.Regular != "" && item.Urls.Original != ""
@@ -138,51 +167,35 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	regularURLs := lo.Map(urlItems, func(item *pixiv_public_types.IllustDetailPagesRespItem, _ int) string { return item.Urls.Regular })
 	originalURLs := lo.Map(urlItems, func(item *pixiv_public_types.IllustDetailPagesRespItem, _ int) string { return item.Urls.Original })
 	if len(regularURLs) == 0 || len(originalURLs) == 0 {
-		h.Logger.WithFields(loggerFields).Warn("no image found")
+		loggerEntry.Warn("no image found")
 		return
 	}
 
 	regularURLs = lo.Slice(regularURLs, 0, 4)
 	originalURLs = lo.Slice(originalURLs, 0, 4)
+	e.StepEnds(elapsing.WithName("Extract and filter Pixiv Illust Detail Pages"))
 
-	regularImages := make([]*bytes.Buffer, 0, len(regularURLs))
-	originalImages := make([]*bytes.Buffer, 0, len(originalURLs))
+	regularImages := make([]*bytes.Buffer, len(regularURLs))
+	originalImages := make([]*bytes.Buffer, len(originalURLs))
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		h.Logger.WithFields(loggerFields).Info("fetching regular images...")
-
-		for _, url := range regularURLs {
-			imageBuffer, err := h.fetchPixivIllustImage(url, loggerFields)
-			if err != nil {
-				continue
-			}
-
-			regularImages = append(regularImages, imageBuffer)
-		}
-
-		wg.Done()
-	}()
-
-	wg.Add(1)
-	go func() {
-		h.Logger.WithFields(loggerFields).Info("fetching original images...")
-
-		for _, url := range originalURLs {
-			imageBuffer, err := h.fetchPixivIllustImage(url, loggerFields)
-			if err != nil {
-				continue
-			}
-
-			originalImages = append(originalImages, imageBuffer)
-		}
-
-		wg.Done()
-	}()
+	wg := conc.NewWaitGroup()
+	for i, url := range regularURLs {
+		wg.Go(h.fetchImage(regularImages, i, url, loggerEntry, e.ForFunc()))
+	}
+	for i, url := range originalURLs {
+		wg.Go(h.fetchImage(originalImages, i, url, loggerEntry, e.ForFunc()))
+	}
 
 	wg.Wait()
-	h.Logger.WithFields(loggerFields).Infof("%d regular images, %d original images fetched, sending to telegram...", len(regularImages), len(originalImages))
+	loggerEntry.Infof("%d regular images, %d original images fetched, sending to telegram...", len(regularImages), len(originalImages))
+	e.StepEnds(elapsing.WithName("Fetch Pixiv Illust Images"))
+
+	regularImages = lo.Filter(regularImages, func(item *bytes.Buffer, _ int) bool { return item != nil })
+	originalImages = lo.Filter(originalImages, func(item *bytes.Buffer, _ int) bool { return item != nil })
+	if len(regularImages) == 0 || len(originalImages) == 0 {
+		loggerEntry.Warn("no image can be fetched")
+		return
+	}
 
 	var illustAuthorInfo string
 	if illustDetailResp.Body.UserName == "" {
@@ -203,6 +216,7 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		tags = append(tags, fmt.Sprintf("#%s", tagStr))
 	}
 	illustContentInMarkdown += fmt.Sprintf("\n\n%s", strings.Join(tags, " "))
+	e.StepEnds(elapsing.WithName("Build Pixiv Illust Content"))
 
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,
@@ -233,15 +247,18 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 
 		mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaPhoto)
 	}
+	e.StepEnds(elapsing.WithName("Construct MediaGroupConfig"))
 
 	messages, err := c.Bot.SendMediaGroup(mediaGroupConfig)
 	if err != nil {
 		h.Logger.Error(err)
 		return
 	}
+	e.StepEnds(elapsing.WithName("Send MediaGroup"))
 
 	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, illustID, illustDetailResp.Body.UserName, regularImages, originalImages, regularURLs)
-	h.Logger.WithFields(loggerFields).Infof("%d images sent to channel", len(regularImages))
+	loggerEntry.Infof("%d images sent to channel", len(regularImages))
+	e.StepEnds(elapsing.WithName("Assign Exchanges"))
 
 	// 删除原始 Pixiv 消息
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))
@@ -249,6 +266,8 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 		h.Logger.Error(err)
 		return
 	}
+	e.StepEnds(elapsing.WithName("Delete Original Pixiv Message"))
+	go h.Logger.Debugf("Pixiv to image done, time cost:\n%s", e.Stats())
 }
 
 func (h *Handler) assignExchanges(
@@ -278,19 +297,16 @@ func (h *Handler) cleanupExchanges(chatID int64, messageID int) {
 	h.Exchange.Delete(baseKey + "/processing")
 }
 
-func (h *Handler) fetchPixivIllustImage(link string, loggerFields logrus.Fields) (*bytes.Buffer, error) {
-	loggerFields["image_url"] = link
-	defer delete(loggerFields, "image_url")
-
-	h.Logger.WithFields(loggerFields).Debugf("fetching pixiv image")
+func (h *Handler) fetchPixivIllustImage(link string, logEntry *logrus.Entry) (*bytes.Buffer, error) {
+	logEntry.WithField("image_url", link).Debugf("fetching pixiv image")
 
 	buffer, err := h.Pixiv.GetImage(link)
 	if err != nil {
-		h.Logger.WithFields(loggerFields).Errorf("failed to fetch pixiv image, err: %v", err)
+		logEntry.WithField("image_url", link).Errorf("failed to fetch pixiv image, err: %v", err)
 		return nil, err
 	}
 
-	h.Logger.WithFields(loggerFields).Debugf("fetched pixiv image")
+	logEntry.WithField("image_url", link).Debugf("fetched pixiv image")
 	return buffer, nil
 }
 

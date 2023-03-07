@@ -16,8 +16,10 @@ import (
 	"github.com/imroc/req/v3"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
+	"github.com/sourcegraph/conc"
 	"go.uber.org/fx"
 
+	"github.com/nekomeowww/elapsing"
 	"github.com/nekomeowww/perobot/internal/models/twitter"
 	"github.com/nekomeowww/perobot/pkg/handler"
 	"github.com/nekomeowww/perobot/pkg/logger"
@@ -58,6 +60,154 @@ type FetchedTweetMedia struct {
 	OriginalBody *bytes.Buffer
 }
 
+func (h *Handler) fetchImageMediaAsFetchedTweetMedia(
+	media *twitter_public_types.ExtendedEntityMedia,
+	logEntry *logrus.Entry,
+	fc *elapsing.FuncCall,
+) *FetchedTweetMedia {
+	defer fc.Return()
+
+	if media.MediaURLHTTPS == "" {
+		return nil
+	}
+
+	regularURL := media.MediaURLHTTPS
+	originalURL := tweetImageTo4kImage(regularURL)
+
+	var regularImageBuffer *bytes.Buffer
+	var originalImageBuffer *bytes.Buffer
+
+	fc.StepEnds(elapsing.WithName("Generate regular and original image URLs"))
+
+	wg := conc.NewWaitGroup()
+	wg.Go(func() {
+		var err error
+		regularImageBuffer, err = h.fetchTweetMedia(regularURL, logEntry)
+		if err != nil {
+			logEntry.Errorf("failed to fetch regular images, err: %v", err)
+		}
+	})
+	wg.Go(func() {
+		var err error
+		originalImageBuffer, err = h.fetchTweetMedia(originalURL, logEntry)
+		if err != nil {
+			logEntry.Errorf("failed to fetch original images, err: %v", err)
+		}
+	})
+
+	wg.Wait()
+	if regularImageBuffer == nil || originalImageBuffer == nil {
+		return nil
+	}
+
+	fc.StepEnds(elapsing.WithName("Fetch regular and original images"))
+
+	return &FetchedTweetMedia{
+		Type:         twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto,
+		URL:          regularURL,
+		Body:         regularImageBuffer,
+		OriginalBody: originalImageBuffer,
+	}
+}
+
+func (h *Handler) fetchVideoMediaAsFetchedTweetMedia(
+	media *twitter_public_types.ExtendedEntityMedia,
+	logEntry *logrus.Entry,
+	fc *elapsing.FuncCall,
+) *FetchedTweetMedia {
+	defer fc.Return()
+
+	if media.VideoInfo == nil {
+		return nil
+	}
+	if len(media.VideoInfo.Variants) == 0 {
+		return nil
+	}
+
+	media.VideoInfo.Variants = lo.Filter(media.VideoInfo.Variants, func(item twitter_public_types.ExtendedEntityMediaVideoVariant, _ int) bool {
+		return item.Bitrate != 0 && item.ContentType == "video/mp4"
+	})
+	sort.SliceStable(media.VideoInfo.Variants, func(i, j int) bool {
+		return media.VideoInfo.Variants[i].Bitrate > media.VideoInfo.Variants[j].Bitrate
+	})
+
+	regularURL := media.VideoInfo.Variants[0].URL
+	originalURL := media.VideoInfo.Variants[len(media.VideoInfo.Variants)-1].URL
+
+	fc.StepEnds(elapsing.WithName("Generate regular and original video URLs"))
+
+	var regularVideoBuffer *bytes.Buffer
+	var originalVideoBuffer *bytes.Buffer
+
+	wg := conc.NewWaitGroup()
+	wg.Go(func() {
+		var err error
+		regularVideoBuffer, err = h.fetchTweetMedia(regularURL, logEntry)
+		if err != nil {
+			logEntry.Errorf("failed to fetch regular videos, err: %v", err)
+		}
+	})
+	wg.Go(func() {
+		var err error
+		originalVideoBuffer, err = h.fetchTweetMedia(originalURL, logEntry)
+		if err != nil {
+			logEntry.Errorf("failed to fetch original videos, err: %v", err)
+		}
+	})
+
+	wg.Wait()
+	if regularVideoBuffer == nil || originalVideoBuffer == nil {
+		return nil
+	}
+
+	fc.StepEnds(elapsing.WithName("Fetch regular and original videos"))
+
+	return &FetchedTweetMedia{
+		Type:         twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo,
+		URL:          regularURL,
+		Body:         regularVideoBuffer,
+		OriginalBody: originalVideoBuffer,
+	}
+}
+
+func (h *Handler) newFetchingImageWorkerFunction(
+	mediasSlice []*FetchedTweetMedia,
+	mediaSliceIndex int,
+	media *twitter_public_types.ExtendedEntityMedia,
+	logEntry *logrus.Entry,
+	fc *elapsing.FuncCall,
+) func() {
+	return func() {
+		defer fc.Return()
+
+		fetchedTweetMedia := h.fetchImageMediaAsFetchedTweetMedia(media, logEntry, fc.ForFunc())
+		if fetchedTweetMedia != nil {
+			mediasSlice[mediaSliceIndex] = fetchedTweetMedia
+		} else {
+			logEntry.Warnf("failed to fetch image: %s", media.URL)
+		}
+	}
+}
+
+func (h *Handler) newFetchingVideoWorkerFunction(
+	mediasSlice []*FetchedTweetMedia,
+	mediaSliceIndex int,
+	media *twitter_public_types.ExtendedEntityMedia,
+	logEntry *logrus.Entry,
+	fc *elapsing.FuncCall,
+) func() {
+	return func() {
+		defer fc.Return()
+
+		fetchedTweetMedia := h.fetchVideoMediaAsFetchedTweetMedia(media, logEntry, fc.ForFunc())
+		if fetchedTweetMedia != nil {
+			mediasSlice[mediaSliceIndex] = fetchedTweetMedia
+		} else {
+			logEntry.Warnf("failed to fetch video: %s", media.URL)
+		}
+	}
+}
+
 func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	// 转发的消息不处理
 	if c.Update.ChannelPost.ForwardFrom != nil {
@@ -68,23 +218,26 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return
 	}
 
+	e := elapsing.New()
 	tweetURL, err := url.Parse(c.Update.ChannelPost.Text)
 	if err != nil {
 		return
 	}
+	e.StepEnds(elapsing.WithName("Parse URL"))
 
 	tweetRawURL := fmt.Sprintf("%s://%s%s", tweetURL.Scheme, tweetURL.Host, tweetURL.Path)
 	tweetID := TweetIDFromText(tweetRawURL)
 	if tweetID == "" {
 		return
 	}
+	e.StepEnds(elapsing.WithName("Extract Tweet ID"))
 
-	loggerFields := logrus.Fields{
+	logEntry := h.Logger.WithFields(logrus.Fields{
 		"tweet_id":   tweetID,
 		"tweet_url":  tweetRawURL,
 		"chat_id":    c.Update.ChannelPost.Chat.ID,
 		"chat_title": c.Update.ChannelPost.Chat.Title,
-	}
+	})
 
 	var tweet *twitter_public_types.TweetResultsResult
 	_, _, err = lo.AttemptWithDelay(10, time.Second, func(index int, duration time.Duration) error {
@@ -99,13 +252,14 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return nil
 	})
 	if err != nil {
-		h.Logger.WithFields(loggerFields).Errorf("failed to get tweet, err: %v", err)
+		logEntry.Errorf("failed to get tweet, err: %v", err)
 		return
 	}
 	if tweet == nil {
-		h.Logger.WithFields(loggerFields).Warn("tweet not found")
+		logEntry.Warn("tweet not found")
 		return
 	}
+	e.StepEnds(elapsing.WithName("Fetch TweetDetail"))
 
 	medias := tweet.ExtendedMedias()
 	if len(medias) == 0 {
@@ -113,123 +267,37 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Info("tweet found, fetching images/videos...")
+	e.StepEnds(elapsing.WithName("Extract Tweet Medias"))
+	medias = lo.Filter(medias, func(item *twitter_public_types.ExtendedEntityMedia, _ int) bool {
+		return lo.Contains([]twitter_public_types.EntityMediaType{
+			twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto,
+			twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo,
+		}, item.Type)
+	})
 
-	fetchedMedias := make([]*FetchedTweetMedia, 0, len(medias))
-	for _, media := range medias {
+	logEntry.Infof("tweet found, fetching %d images/videos...", len(medias))
+
+	wg := conc.NewWaitGroup()
+	fetchedMedias := make([]*FetchedTweetMedia, len(medias))
+	for i, media := range medias {
 		switch media.Type {
 		case twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto:
-			if media.Type == twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto && media.MediaURLHTTPS != "" {
-				continue
-			}
-
-			regularURL := media.MediaURLHTTPS
-			originalURL := tweetImageTo4kImage(regularURL)
-
-			var regularImageBuffer *bytes.Buffer
-			var originalImageBuffer *bytes.Buffer
-
-			var wg sync.WaitGroup
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-
-				h.Logger.WithFields(loggerFields).Info("fetching regular images...")
-				regularImageBuffer, err = h.fetchTweetMedia(regularURL, loggerFields)
-				if err != nil {
-					h.Logger.WithFields(loggerFields).Errorf("failed to fetch regular images, err: %v", err)
-					return
-				}
-			}()
-
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-
-				h.Logger.WithFields(loggerFields).Info("fetching original images...")
-				originalImageBuffer, err = h.fetchTweetMedia(originalURL, loggerFields)
-				if err != nil {
-					h.Logger.WithFields(loggerFields).Errorf("failed to fetch original images, err: %v", err)
-					return
-				}
-			}()
-
-			wg.Wait()
-			if err != nil || regularImageBuffer == nil || originalImageBuffer == nil {
-				return
-			}
-
-			fetchedMedias = append(fetchedMedias, &FetchedTweetMedia{
-				Type:         twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto,
-				URL:          regularURL,
-				Body:         regularImageBuffer,
-				OriginalBody: originalImageBuffer,
-			})
+			wg.Go(h.newFetchingImageWorkerFunction(fetchedMedias, i, media, logEntry, e.ForFunc()))
 		case twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo:
-			if media.VideoInfo == nil {
-				continue
-			}
-			if len(media.VideoInfo.Variants) == 0 {
-				continue
-			}
-
-			media.VideoInfo.Variants = lo.Filter(media.VideoInfo.Variants, func(item twitter_public_types.ExtendedEntityMediaVideoVariant, _ int) bool {
-				return item.Bitrate != 0 && item.ContentType == "video/mp4"
-			})
-			sort.SliceStable(media.VideoInfo.Variants, func(i, j int) bool {
-				return media.VideoInfo.Variants[i].Bitrate > media.VideoInfo.Variants[j].Bitrate
-			})
-
-			regularURL := media.VideoInfo.Variants[0].URL
-			originalURL := media.VideoInfo.Variants[len(media.VideoInfo.Variants)-1].URL
-
-			var regularVideoBuffer *bytes.Buffer
-			var originalVideoBuffer *bytes.Buffer
-
-			var wg sync.WaitGroup
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-
-				h.Logger.WithFields(loggerFields).Info("fetching regular videos...")
-				regularVideoBuffer, err = h.fetchTweetMedia(regularURL, loggerFields)
-				if err != nil {
-					h.Logger.WithFields(loggerFields).Errorf("failed to fetch regular videos, err: %v", err)
-					return
-				}
-			}()
-
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-
-				h.Logger.WithFields(loggerFields).Info("fetching original videos...")
-				originalVideoBuffer, err = h.fetchTweetMedia(originalURL, loggerFields)
-				if err != nil {
-					h.Logger.WithFields(loggerFields).Errorf("failed to fetch original videos, err: %v", err)
-					return
-				}
-			}()
-
-			wg.Wait()
-			if err != nil || regularVideoBuffer == nil || originalVideoBuffer == nil {
-				return
-			}
-
-			fetchedMedias = append(fetchedMedias, &FetchedTweetMedia{
-				Type:         twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo,
-				URL:          regularURL,
-				Body:         regularVideoBuffer,
-				OriginalBody: originalVideoBuffer,
-			})
+			wg.Go(h.newFetchingVideoWorkerFunction(fetchedMedias, i, media, logEntry, e.ForFunc()))
+		default:
 		}
 	}
+
+	wg.Wait()
+	fetchedMedias = lo.Filter(fetchedMedias, func(item *FetchedTweetMedia, _ int) bool { return item != nil })
 	if len(fetchedMedias) == 0 {
-		h.Logger.WithFields(loggerFields).Warn("no images/videos fetched, probably because of rate limit")
+		logEntry.Warn("no images/videos fetched, probably because of rate limit")
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Infof("%d images/videos fetched, sending to telegram...", len(fetchedMedias))
+	logEntry.Infof("%d images/videos fetched, sending to telegram...", len(fetchedMedias))
+	e.StepEnds(elapsing.WithName("Fetch Medias"))
 
 	tweetAuthor := tweet.User()
 	var tweetAuthorInfo string
@@ -243,6 +311,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	if tweetContentInMarkdown != "" {
 		tweetContentInMarkdown = "：\n\n" + tweetContentInMarkdown
 	}
+	e.StepEnds(elapsing.WithName("Construct Message Content"))
 
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,
@@ -294,14 +363,20 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		}
 	}
 
+	e.StepEnds(elapsing.WithName("Construct MediaGroupConfig"))
+
 	messages, err := c.Bot.SendMediaGroup(mediaGroupConfig)
 	if err != nil {
 		h.Logger.Error(err)
 		return
 	}
 
+	e.StepEnds(elapsing.WithName("Send MediaGroup"))
+
 	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, tweetID, tweetAuthor.ScreenName, fetchedMedias)
-	h.Logger.WithFields(loggerFields).Infof("%d images/videos sent to channel", len(fetchedMedias))
+	logEntry.Infof("%d images/videos sent to channel", len(fetchedMedias))
+
+	e.StepEnds(elapsing.WithName("Assign Exchanges"))
 
 	// 删除原始推文
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))
@@ -309,6 +384,9 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		h.Logger.Error(err)
 		return
 	}
+
+	e.StepEnds(elapsing.WithName("Delete Original Message"))
+	go h.Logger.Debugf("Tweet to media done, time cost:\n%s", e.Stats())
 }
 
 func (h *Handler) assignExchanges(chatID int64, messageID int, tweetID string, author string, medias []*FetchedTweetMedia) {
@@ -346,25 +424,23 @@ func tweetImageTo4kImage(imageLink string) string {
 	return fmt.Sprintf("%s?format=%s&name=4096x4096", linkWithoutExt, strings.TrimPrefix(ext, "."))
 }
 
-func (h *Handler) fetchTweetMedia(link string, loggerFields logrus.Fields) (*bytes.Buffer, error) {
-	loggerFields["image_url"] = link
-	defer delete(loggerFields, "image_url")
-
-	h.Logger.WithFields(loggerFields).Debugf("fetching image from tweet")
+func (h *Handler) fetchTweetMedia(link string, logEntry *logrus.Entry) (*bytes.Buffer, error) {
+	logEntry.WithField("image_url", link).Debugf("fetching image from tweet")
 
 	buffer := new(bytes.Buffer)
 	resp, err := h.ReqClient.R().SetOutput(buffer).Get(link)
 	if err != nil {
-		h.Logger.WithFields(loggerFields).Errorf("failed to fetch image from tweet, err: %v", err)
+		logEntry.WithField("image_url", link).Errorf("failed to fetch image from tweet, err: %v", err)
 		return nil, err
 	}
 	if !resp.IsSuccess() {
-		loggerFields["status_code"] = resp.StatusCode
-		h.Logger.WithFields(loggerFields).Error("failed to fetch image from tweet")
-		delete(loggerFields, "status_code")
+		logEntry.WithFields(logrus.Fields{
+			"image_url":   link,
+			"status_code": resp.StatusCode,
+		}).Error("failed to fetch image from tweet")
 		return nil, errors.New("failed to fetch image from tweet")
 	}
 
-	h.Logger.WithFields(loggerFields).Debugf("fetched image from tweet")
+	logEntry.WithField("image_url", link).Debugf("fetched image from tweet")
 	return buffer, nil
 }

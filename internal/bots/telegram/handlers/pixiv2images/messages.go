@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/disintegration/imaging"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/nekomeowww/imaging"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nekomeowww/perobot/pkg/handler"

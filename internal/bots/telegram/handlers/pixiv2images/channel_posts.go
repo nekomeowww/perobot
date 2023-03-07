@@ -199,9 +199,10 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	// 写入标签
 	tags := make([]string, 0, len(illustDetailResp.Body.Tags.Tags))
 	for _, tag := range illustDetailResp.Body.Tags.Tags {
-		tags = append(tags, fmt.Sprintf("#%s", tag.Tag))
+		tagStr := strings.ReplaceAll(tag.Tag, "-", "")
+		tags = append(tags, fmt.Sprintf("#%s", tagStr))
 	}
-	illustContentInMarkdown += strings.Join(tags, " ")
+	illustContentInMarkdown += fmt.Sprintf("\n\n%s", strings.Join(tags, " "))
 
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,

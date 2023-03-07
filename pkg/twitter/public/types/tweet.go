@@ -232,21 +232,25 @@ func (r *TweetResultsResult) PhotoURLs() []string {
 	})
 }
 
-func (r *TweetResultsResult) ExtendedPhotoURLs() []string {
+func (r *TweetResultsResult) ExtendedMedias() []*ExtendedEntityMedia {
 	if r.Legacy == nil {
 		fmt.Println("Unrecognizable tweet, no legacy field found")
-		return make([]string, 0)
+		return make([]*ExtendedEntityMedia, 0)
 	}
 	if r.Legacy.ExtendedEntities == nil {
 		fmt.Println("Unrecognizable tweet, no extended_entities field found")
-		return make([]string, 0)
+		return make([]*ExtendedEntityMedia, 0)
 	}
 	if len(r.Legacy.ExtendedEntities.Media) == 0 {
 		fmt.Println("Tweet has no medias")
-		return make([]string, 0)
+		return make([]*ExtendedEntityMedia, 0)
 	}
 
-	photos := lo.Filter(r.Legacy.ExtendedEntities.Media, func(media *ExtendedEntityMedia, _ int) bool {
+	return r.Legacy.ExtendedEntities.Media
+}
+
+func (r *TweetResultsResult) PhotoURLsFromExtendedMedias(extendedMedias []*ExtendedEntityMedia) []string {
+	photos := lo.Filter(extendedMedias, func(media *ExtendedEntityMedia, _ int) bool {
 		return media.Type == TweetLegacyExtendedEntityMediaTypePhoto && media.MediaURLHTTPS != ""
 	})
 

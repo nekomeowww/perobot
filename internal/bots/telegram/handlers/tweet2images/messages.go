@@ -3,6 +3,7 @@ package tweet2images
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"path/filepath"
 
 	"github.com/disintegration/imaging"
@@ -10,6 +11,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nekomeowww/perobot/pkg/handler"
+	twitter_public_types "github.com/nekomeowww/perobot/pkg/twitter/public/types"
 )
 
 func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Context) {
@@ -59,27 +61,15 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		return
 	}
 
-	imagesRaw, ok := h.Exchange.Load(baseKey + "/images")
+	mediasRaw, ok := h.Exchange.Load(baseKey + "/medias")
 	if !ok {
-		h.Logger.WithFields(loggerFields).Error("images not found")
+		h.Logger.WithFields(loggerFields).Error("medias not found")
 		return
 	}
 
-	images, ok := imagesRaw.([]*bytes.Buffer)
+	medias, ok := mediasRaw.([]*FetchedTweetMedia)
 	if !ok {
-		h.Logger.WithFields(loggerFields).Error("images not found, incorrect type, type is not []*bytes.Buffer")
-		return
-	}
-
-	imageLinksRaw, ok := h.Exchange.Load(baseKey + "/images/links")
-	if !ok {
-		h.Logger.WithFields(loggerFields).Error("image links not found")
-		return
-	}
-
-	imageLinks, ok := imageLinksRaw.([]string)
-	if !ok {
-		h.Logger.WithFields(loggerFields).Error("image links not found, incorrect type, type is not []string")
+		h.Logger.WithFields(loggerFields).Error("medias not found, incorrect type, type is not []*FetchedTweetMedia")
 		return
 	}
 
@@ -106,9 +96,13 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 	}
 
 	h.Logger.Info("generating thumbnails...")
-	thumbnailImages := make([]*bytes.Buffer, len(images))
-	for i, image := range images {
-		img, err := imaging.Decode(bytes.NewReader(image.Bytes()))
+	thumbnailImages := make([]*bytes.Buffer, len(medias))
+	for i, media := range medias {
+		if media.Type != twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto {
+			continue
+		}
+
+		img, err := imaging.Decode(bytes.NewReader(media.Body.Bytes()))
 		if err != nil {
 			h.Logger.WithFields(loggerFields).Error(err)
 			continue
@@ -127,22 +121,30 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		}
 	}
 
-	h.Logger.Info("sending images to discussion group...")
+	h.Logger.Info("sending medias to discussion group...")
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ReplyToMessageID: c.Update.Message.MessageID,
 		ChatID:           c.Update.Message.Chat.ID,
-		Media:            make([]interface{}, 0, len(images)),
+		Media:            make([]interface{}, 0, len(medias)),
 	}
 
-	for i, image := range images {
+	for i, media := range medias {
+		parsedURL, err := url.Parse(media.URL)
+		if err != nil {
+			continue
+		}
+
+		parsedURL.RawQuery = ""
+		parsedURL.Fragment = ""
+
 		file := tgbotapi.FileBytes{
 			Name: fmt.Sprintf("twitter-by-%s-%s-%d%s",
 				authorName,
 				tweetID,
 				i,
-				filepath.Ext(imageLinks[i]),
+				filepath.Ext(parsedURL.String()),
 			),
-			Bytes: image.Bytes(),
+			Bytes: media.OriginalBody.Bytes(),
 		}
 
 		inputMediaDocument := tgbotapi.NewInputMediaDocument(file)
@@ -167,9 +169,10 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Infof("%d images sent as comment of channel post in discussion group", len(images))
+	h.Logger.WithFields(loggerFields).Infof("%d images sent as comment of channel post in discussion group", len(medias))
 
-	for _, i := range images {
-		i.Reset()
+	for _, i := range medias {
+		i.Body.Reset()
+		i.OriginalBody.Reset()
 	}
 }

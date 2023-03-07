@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,13 @@ func NewHandler() func(param NewHandlerParam) *Handler {
 		}
 		return handler
 	}
+}
+
+type FetchedTweetMedia struct {
+	Type         twitter_public_types.EntityMediaType
+	URL          string
+	Body         *bytes.Buffer
+	OriginalBody *bytes.Buffer
 }
 
 func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
@@ -99,30 +107,129 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return
 	}
 
-	imageLinks := tweet.ExtendedPhotoURLs()
-	if len(imageLinks) == 0 {
-		h.Logger.WithField("tweet_id", tweetID).Warn("no images found in tweet, if tweet does contain images, then it is probably because the image contains adult content")
+	medias := tweet.ExtendedMedias()
+	if len(medias) == 0 {
+		h.Logger.WithField("tweet_id", tweetID).Warn("no images/videos found in tweet, if tweet does contain images, then it is probably because the image contains adult content")
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Info("tweet found, fetching images...")
+	h.Logger.WithFields(loggerFields).Info("tweet found, fetching images/videos...")
 
-	originalImagesLinks := lo.Map(imageLinks, func(link string, _ int) string { return tweetImageTo4kImage(link) })
-	images := make([]*bytes.Buffer, 0, len(originalImagesLinks))
-	for _, link := range originalImagesLinks {
-		imageBuffer, err := h.fetchTweetImage(link, loggerFields)
-		if err != nil {
-			continue
+	fetchedMedias := make([]*FetchedTweetMedia, 0, len(medias))
+	for _, media := range medias {
+		switch media.Type {
+		case twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto:
+			if media.Type == twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto && media.MediaURLHTTPS != "" {
+				continue
+			}
+
+			regularURL := media.MediaURLHTTPS
+			originalURL := tweetImageTo4kImage(regularURL)
+
+			var regularImageBuffer *bytes.Buffer
+			var originalImageBuffer *bytes.Buffer
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				h.Logger.WithFields(loggerFields).Info("fetching regular images...")
+				regularImageBuffer, err = h.fetchTweetMedia(regularURL, loggerFields)
+				if err != nil {
+					h.Logger.WithFields(loggerFields).Errorf("failed to fetch regular images, err: %v", err)
+					return
+				}
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				h.Logger.WithFields(loggerFields).Info("fetching original images...")
+				originalImageBuffer, err = h.fetchTweetMedia(originalURL, loggerFields)
+				if err != nil {
+					h.Logger.WithFields(loggerFields).Errorf("failed to fetch original images, err: %v", err)
+					return
+				}
+			}()
+
+			wg.Wait()
+			if err != nil || regularImageBuffer == nil || originalImageBuffer == nil {
+				return
+			}
+
+			fetchedMedias = append(fetchedMedias, &FetchedTweetMedia{
+				Type:         twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto,
+				URL:          regularURL,
+				Body:         regularImageBuffer,
+				OriginalBody: originalImageBuffer,
+			})
+		case twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo:
+			if media.VideoInfo == nil {
+				continue
+			}
+			if len(media.VideoInfo.Variants) == 0 {
+				continue
+			}
+
+			media.VideoInfo.Variants = lo.Filter(media.VideoInfo.Variants, func(item twitter_public_types.ExtendedEntityMediaVideoVariant, _ int) bool {
+				return item.Bitrate != 0 && item.ContentType == "video/mp4"
+			})
+			sort.SliceStable(media.VideoInfo.Variants, func(i, j int) bool {
+				return media.VideoInfo.Variants[i].Bitrate > media.VideoInfo.Variants[j].Bitrate
+			})
+
+			regularURL := media.VideoInfo.Variants[0].URL
+			originalURL := media.VideoInfo.Variants[len(media.VideoInfo.Variants)-1].URL
+
+			var regularVideoBuffer *bytes.Buffer
+			var originalVideoBuffer *bytes.Buffer
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				h.Logger.WithFields(loggerFields).Info("fetching regular videos...")
+				regularVideoBuffer, err = h.fetchTweetMedia(regularURL, loggerFields)
+				if err != nil {
+					h.Logger.WithFields(loggerFields).Errorf("failed to fetch regular videos, err: %v", err)
+					return
+				}
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				h.Logger.WithFields(loggerFields).Info("fetching original videos...")
+				originalVideoBuffer, err = h.fetchTweetMedia(originalURL, loggerFields)
+				if err != nil {
+					h.Logger.WithFields(loggerFields).Errorf("failed to fetch original videos, err: %v", err)
+					return
+				}
+			}()
+
+			wg.Wait()
+			if err != nil || regularVideoBuffer == nil || originalVideoBuffer == nil {
+				return
+			}
+
+			fetchedMedias = append(fetchedMedias, &FetchedTweetMedia{
+				Type:         twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo,
+				URL:          regularURL,
+				Body:         regularVideoBuffer,
+				OriginalBody: originalVideoBuffer,
+			})
 		}
-
-		images = append(images, imageBuffer)
 	}
-	if len(images) == 0 {
-		h.Logger.WithFields(loggerFields).Warn("no images fetched, probably because of rate limit")
+	if len(fetchedMedias) == 0 {
+		h.Logger.WithFields(loggerFields).Warn("no images/videos fetched, probably because of rate limit")
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Infof("%d images fetched, sending to telegram...", len(images))
+	h.Logger.WithFields(loggerFields).Infof("%d images/videos fetched, sending to telegram...", len(fetchedMedias))
 
 	tweetAuthor := tweet.User()
 	var tweetAuthorInfo string
@@ -139,32 +246,52 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 
 	mediaGroupConfig := tgbotapi.MediaGroupConfig{
 		ChatID: c.Update.ChannelPost.Chat.ID,
-		Media:  make([]interface{}, 0, len(images)),
+		Media:  make([]interface{}, 0, len(fetchedMedias)),
 	}
-	for i, image := range images {
+	for i, media := range fetchedMedias {
 		file := tgbotapi.FileBytes{
-			Name:  fmt.Sprintf("%s-%s", tweetID, filepath.Base(imageLinks[i])),
-			Bytes: image.Bytes(),
+			Name:  fmt.Sprintf("%s-%s", tweetID, filepath.Base(media.URL)),
+			Bytes: media.Body.Bytes(),
 		}
 
-		inputMediaPhoto := tgbotapi.NewInputMediaPhoto(file)
-		if i == 0 {
-			inputMediaPhoto.ParseMode = "HTML"
-			inputMediaPhoto.Caption = fmt.Sprintf(`%s%s`+"\n\n"+`来自 <a href="%s">Twitter</a>`,
-				tweetAuthorInfo,
-				tweetContentInMarkdown,
-				tweetRawURL,
-			)
-			if inputMediaPhoto.Caption == "" {
-				inputMediaPhoto.Caption = c.Update.ChannelPost.Text
+		caption := fmt.Sprintf(`%s%s`+"\n\n"+`来自 <a href="%s">Twitter</a>`,
+			tweetAuthorInfo,
+			tweetContentInMarkdown,
+			tweetRawURL,
+		)
+
+		switch media.Type {
+		case twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto:
+			inputMediaPhoto := tgbotapi.NewInputMediaPhoto(file)
+			if i == 0 {
+				inputMediaPhoto.ParseMode = "HTML"
+				inputMediaPhoto.Caption = caption
+				if inputMediaPhoto.Caption == "" {
+					inputMediaPhoto.Caption = c.Update.ChannelPost.Text
+				}
+
+				h.Logger.Debugf("created a new input media photo with name: %s, size: %d, and caption: %s", file.Name, len(file.Bytes), inputMediaPhoto.Caption)
+			} else {
+				h.Logger.Debugf("created a new input media photo with name: %s, and size: %d", file.Name, len(file.Bytes))
 			}
 
-			h.Logger.Debugf("created a new input media photo with name: %s, size: %d, and caption: %s", file.Name, len(file.Bytes), inputMediaPhoto.Caption)
-		} else {
-			h.Logger.Debugf("created a new input media photo with name: %s, and size: %d", file.Name, len(file.Bytes))
-		}
+			mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaPhoto)
+		case twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo:
+			inputMediaVideo := tgbotapi.NewInputMediaVideo(file)
+			if i == 0 {
+				inputMediaVideo.ParseMode = "HTML"
+				inputMediaVideo.Caption = caption
+				if inputMediaVideo.Caption == "" {
+					inputMediaVideo.Caption = c.Update.ChannelPost.Text
+				}
 
-		mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaPhoto)
+				h.Logger.Debugf("created a new input media video with name: %s, size: %d, and caption: %s", file.Name, len(file.Bytes), inputMediaVideo.Caption)
+			} else {
+				h.Logger.Debugf("created a new input media video with name: %s, and size: %d", file.Name, len(file.Bytes))
+			}
+
+			mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaVideo)
+		}
 	}
 
 	messages, err := c.Bot.SendMediaGroup(mediaGroupConfig)
@@ -173,8 +300,8 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return
 	}
 
-	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, tweetID, tweetAuthor.ScreenName, images, imageLinks)
-	h.Logger.WithFields(loggerFields).Infof("%d images sent to channel", len(images))
+	h.assignExchanges(messages[0].Chat.ID, messages[0].MessageID, tweetID, tweetAuthor.ScreenName, fetchedMedias)
+	h.Logger.WithFields(loggerFields).Infof("%d images/videos sent to channel", len(fetchedMedias))
 
 	// 删除原始推文
 	_, err = c.Bot.Request(tgbotapi.NewDeleteMessage(c.Update.ChannelPost.Chat.ID, c.Update.ChannelPost.MessageID))
@@ -184,20 +311,18 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	}
 }
 
-func (h *Handler) assignExchanges(chatID int64, messageID int, tweetID string, author string, images []*bytes.Buffer, imageLinks []string) {
+func (h *Handler) assignExchanges(chatID int64, messageID int, tweetID string, author string, medias []*FetchedTweetMedia) {
 	baseKey := fmt.Sprintf("key/tweet/%d/%d", chatID, messageID)
 	h.Exchange.Store(baseKey, tweetID)
 	h.Exchange.Store(baseKey+"/author", author)
-	h.Exchange.Store(baseKey+"/images", images)
-	h.Exchange.Store(baseKey+"/images/links", imageLinks)
+	h.Exchange.Store(baseKey+"/medias", medias)
 }
 
 func (h *Handler) cleanupExchanges(chatID int64, messageID int) {
 	baseKey := fmt.Sprintf("key/tweet/%d/%d", chatID, messageID)
 	h.Exchange.Delete(baseKey)
 	h.Exchange.Delete(baseKey + "/author")
-	h.Exchange.Delete(baseKey + "/images")
-	h.Exchange.Delete(baseKey + "/images/links")
+	h.Exchange.Delete(baseKey + "/medias")
 	h.Exchange.Delete(baseKey + "/processing")
 }
 
@@ -221,7 +346,7 @@ func tweetImageTo4kImage(imageLink string) string {
 	return fmt.Sprintf("%s?format=%s&name=4096x4096", linkWithoutExt, strings.TrimPrefix(ext, "."))
 }
 
-func (h *Handler) fetchTweetImage(link string, loggerFields logrus.Fields) (*bytes.Buffer, error) {
+func (h *Handler) fetchTweetMedia(link string, loggerFields logrus.Fields) (*bytes.Buffer, error) {
 	loggerFields["image_url"] = link
 	defer delete(loggerFields, "image_url")
 

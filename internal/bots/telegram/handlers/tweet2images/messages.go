@@ -24,13 +24,20 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		return
 	}
 
-	baseKey := fmt.Sprintf("key/tweet/%d/%d", c.Update.Message.ForwardFromChat.ID, c.Update.Message.ForwardFromMessageID)
+	baseKey := fmt.Sprintf(
+		"key/tweet/%d/%d",
+		c.Update.Message.ForwardFromChat.ID,
+		c.Update.Message.ForwardFromMessageID,
+	)
 
 	tweetID, ok := h.Exchange.Load(baseKey)
 	if !ok {
 		return
 	}
-	defer h.cleanupExchanges(c.Update.Message.ForwardFromChat.ID, c.Update.Message.ForwardFromMessageID)
+	defer h.cleanupExchanges(
+		c.Update.Message.ForwardFromChat.ID,
+		c.Update.Message.ForwardFromMessageID,
+	)
 
 	tweetIDFilesPostingProcessing, ok := h.Exchange.Load(baseKey + "/processing")
 	if ok && tweetIDFilesPostingProcessing == true {
@@ -57,7 +64,8 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 
 	authorName, ok := author.(string)
 	if !ok {
-		h.Logger.WithFields(loggerFields).Error("author not found, incorrect type, type is not string")
+		h.Logger.WithFields(loggerFields).Error("" +
+			"author not found, incorrect type, type is not string")
 		return
 	}
 
@@ -69,29 +77,49 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 
 	medias, ok := mediasRaw.([]*FetchedTweetMedia)
 	if !ok {
-		h.Logger.WithFields(loggerFields).Error("medias not found, incorrect type, type is not []*FetchedTweetMedia")
+		h.Logger.WithFields(loggerFields).Error("" +
+			"medias not found, incorrect type, type is not " +
+			"[]*FetchedTweetMedia")
 		return
 	}
 
-	botChatMemberInOriginalChannel, err := c.Bot.GetChatMember(tgbotapi.GetChatMemberConfig{ChatConfigWithUser: tgbotapi.ChatConfigWithUser{ChatID: c.Update.Message.ForwardFromChat.ID, UserID: c.Bot.Self.ID}})
+	botChatMemberInOriginalChannel, err := c.Bot.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+			ChatID: c.Update.Message.ForwardFromChat.ID,
+			UserID: c.Bot.Self.ID,
+		},
+	})
 	if err != nil {
 		h.Logger.WithFields(loggerFields).Error(err)
 		return
 	}
 
 	if botChatMemberInOriginalChannel.Status != "administrator" {
-		h.Logger.WithFields(loggerFields).Warn("received a message from a channel that the bot is not an administrator in, ignoring...")
+		h.Logger.WithFields(loggerFields).Warn("" +
+			"received a message from a channel that the bot is not " +
+			"an administrator in, ignoring...")
 		return
 	}
 
-	h.Logger.Info("linked channel message received, processing... prepare to send images to discussion group")
-	botChatMemberInDiscussionGroup, err := c.Bot.GetChatMember(tgbotapi.GetChatMemberConfig{ChatConfigWithUser: tgbotapi.ChatConfigWithUser{ChatID: c.Update.Message.Chat.ID, UserID: c.Bot.Self.ID}})
+	h.Logger.Info("" +
+		"linked channel message received, processing... prepare to " +
+		"send images to discussion group")
+	botChatMemberInDiscussionGroup, err := c.Bot.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+			ChatID: c.Update.Message.Chat.ID,
+			UserID: c.Bot.Self.ID,
+		},
+	})
 	if err != nil {
 		h.Logger.WithFields(loggerFields).Error(err)
 		return
 	}
-	if botChatMemberInDiscussionGroup.Status != "administrator" && !botChatMemberInDiscussionGroup.CanSendMediaMessages {
-		h.Logger.WithFields(loggerFields).Error("bot is not an administrator in the discussion group or does not have the permission to send messages or media messages")
+	if botChatMemberInDiscussionGroup.Status != "administrator" &&
+		!botChatMemberInDiscussionGroup.CanSendMediaMessages {
+		h.Logger.WithFields(loggerFields).Error("" +
+			"bot is not an administrator in the discussion group or " +
+			"does not have the permission to send messages or media " +
+			"messages")
 		return
 	}
 
@@ -148,7 +176,9 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		}
 
 		inputMediaDocument := tgbotapi.NewInputMediaDocument(file)
-		h.Logger.Debugf("created a new input media document with name: %s, and size: %d", file.Name, len(file.Bytes))
+		h.Logger.Debugf(""+
+			"created a new input media document with name: %s, "+
+			"and size: %d", file.Name, len(file.Bytes))
 
 		if thumbnailImages[i] != nil {
 			thumbFile := tgbotapi.FileBytes{
@@ -157,7 +187,9 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 			}
 
 			inputMediaDocument.Thumb = thumbFile
-			h.Logger.Debugf("created a new input media document thumbnail with name: %s, and size: %d", thumbFile.Name, len(thumbFile.Bytes))
+			h.Logger.Debugf(""+
+				"created a new input media document thumbnail with "+
+				"name: %s, and size: %d", thumbFile.Name, len(thumbFile.Bytes))
 		}
 
 		mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaDocument)
@@ -169,7 +201,9 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Infof("%d images sent as comment of channel post in discussion group", len(medias))
+	h.Logger.WithFields(loggerFields).Infof(""+
+		"%d images sent as comment of channel post in "+
+		"discussion group", len(medias))
 
 	for _, i := range medias {
 		i.Body.Reset()

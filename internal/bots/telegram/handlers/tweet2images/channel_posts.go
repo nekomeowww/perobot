@@ -58,6 +58,8 @@ type FetchedTweetMedia struct {
 	URL          string
 	Body         *bytes.Buffer
 	OriginalBody *bytes.Buffer
+	Height       int
+	Width        int
 }
 
 func (h *Handler) fetchImageMediaAsFetchedTweetMedia(
@@ -124,16 +126,12 @@ func (h *Handler) fetchVideoMediaAsFetchedTweetMedia(
 		return nil
 	}
 
-	media.VideoInfo.Variants = lo.Filter(media.VideoInfo.Variants, func(item twitter_public_types.ExtendedEntityMediaVideoVariant, _ int) bool {
-		return item.Bitrate != 0 && item.ContentType == "video/mp4"
-	})
 	sort.SliceStable(media.VideoInfo.Variants, func(i, j int) bool {
 		return media.VideoInfo.Variants[i].Bitrate > media.VideoInfo.Variants[j].Bitrate
 	})
 
 	regularURL := media.VideoInfo.Variants[0].URL
 	originalURL := media.VideoInfo.Variants[len(media.VideoInfo.Variants)-1].URL
-
 	fc.StepEnds(elapsing.WithName("Generate regular and original video URLs"))
 
 	var regularVideoBuffer *bytes.Buffer
@@ -167,6 +165,8 @@ func (h *Handler) fetchVideoMediaAsFetchedTweetMedia(
 		URL:          regularURL,
 		Body:         regularVideoBuffer,
 		OriginalBody: originalVideoBuffer,
+		Height:       media.Sizes.Large.H,
+		Width:        media.Sizes.Large.W,
 	}
 }
 
@@ -272,6 +272,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return lo.Contains([]twitter_public_types.EntityMediaType{
 			twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto,
 			twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo,
+			twitter_public_types.TweetLegacyExtendedEntityMediaTypeAnimatedGIF,
 		}, item.Type)
 	})
 
@@ -284,6 +285,8 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		case twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto:
 			wg.Go(h.newFetchingImageWorkerFunction(fetchedMedias, i, media, logEntry, e.ForFunc()))
 		case twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo:
+			wg.Go(h.newFetchingVideoWorkerFunction(fetchedMedias, i, media, logEntry, e.ForFunc()))
+		case twitter_public_types.TweetLegacyExtendedEntityMediaTypeAnimatedGIF:
 			wg.Go(h.newFetchingVideoWorkerFunction(fetchedMedias, i, media, logEntry, e.ForFunc()))
 		default:
 		}
@@ -350,6 +353,8 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 			if i == 0 {
 				inputMediaVideo.ParseMode = "HTML"
 				inputMediaVideo.Caption = caption
+				inputMediaVideo.Height = media.Height
+				inputMediaVideo.Width = media.Width
 				if inputMediaVideo.Caption == "" {
 					inputMediaVideo.Caption = c.Update.ChannelPost.Text
 				}

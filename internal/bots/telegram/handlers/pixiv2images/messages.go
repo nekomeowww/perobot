@@ -26,13 +26,20 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 	// 等待 ChannelPostPixivToImages 处理完毕并获取到 chat id 和 message id
 	time.Sleep(time.Second)
 
-	baseKey := fmt.Sprintf("key/pixiv/%d/%d", c.Update.Message.ForwardFromChat.ID, c.Update.Message.ForwardFromMessageID)
+	baseKey := fmt.Sprintf(
+		"key/pixiv/%d/%d",
+		c.Update.Message.ForwardFromChat.ID,
+		c.Update.Message.ForwardFromMessageID,
+	)
 	illustID, ok := h.Exchange.Load(baseKey)
 	if !ok {
 		return
 	}
 
-	defer h.cleanupExchanges(c.Update.Message.ForwardFromChat.ID, c.Update.Message.ForwardFromMessageID)
+	defer h.cleanupExchanges(
+		c.Update.Message.ForwardFromChat.ID,
+		c.Update.Message.ForwardFromMessageID,
+	)
 
 	illustIDFilesPostingProcessing, ok := h.Exchange.Load(baseKey + "/processing")
 	if ok && illustIDFilesPostingProcessing == true {
@@ -59,7 +66,8 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 
 	authorName, ok := author.(string)
 	if !ok {
-		h.Logger.WithFields(loggerFields).Error("author not found, incorrect type, type is not string")
+		h.Logger.WithFields(loggerFields).Error("" +
+			"author not found, incorrect type, type is not string")
 		return
 	}
 
@@ -71,7 +79,8 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 
 	images, ok := imagesRaw.([]*bytes.Buffer)
 	if !ok {
-		h.Logger.WithFields(loggerFields).Error("images not found, incorrect type, type is not []*bytes.Buffer")
+		h.Logger.WithFields(loggerFields).Error("" +
+			"images not found, incorrect type, type is not []*bytes.Buffer")
 		return
 	}
 
@@ -83,29 +92,47 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 
 	imageLinks, ok := imageLinksRaw.([]string)
 	if !ok {
-		h.Logger.WithFields(loggerFields).Error("image url not found, incorrect type, type is not []string")
+		h.Logger.WithFields(loggerFields).Error("" +
+			"image url not found, incorrect type, type is not []string")
 		return
 	}
 
-	botChatMemberInOriginalChannel, err := c.Bot.GetChatMember(tgbotapi.GetChatMemberConfig{ChatConfigWithUser: tgbotapi.ChatConfigWithUser{ChatID: c.Update.Message.ForwardFromChat.ID, UserID: c.Bot.Self.ID}})
+	botChatMemberInOriginalChannel, err := c.Bot.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+			ChatID: c.Update.Message.ForwardFromChat.ID,
+			UserID: c.Bot.Self.ID,
+		},
+	})
 	if err != nil {
 		h.Logger.WithFields(loggerFields).Error(err)
 		return
 	}
 
 	if botChatMemberInOriginalChannel.Status != "administrator" {
-		h.Logger.WithFields(loggerFields).Warn("received a message from a channel that the bot is not an administrator in, ignoring...")
+		h.Logger.WithFields(loggerFields).Warn("" +
+			"received a message from a channel that the bot is not an administrator in, ignoring...")
 		return
 	}
 
-	h.Logger.Info("linked channel message received, processing... prepare to send images to discussion group")
-	botChatMemberInDiscussionGroup, err := c.Bot.GetChatMember(tgbotapi.GetChatMemberConfig{ChatConfigWithUser: tgbotapi.ChatConfigWithUser{ChatID: c.Update.Message.Chat.ID, UserID: c.Bot.Self.ID}})
+	h.Logger.Info("" +
+		"linked channel message received, processing... prepare " +
+		"to send images to discussion group")
+	botChatMemberInDiscussionGroup, err := c.Bot.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+			ChatID: c.Update.Message.Chat.ID,
+			UserID: c.Bot.Self.ID,
+		},
+	})
 	if err != nil {
 		h.Logger.WithFields(loggerFields).Error(err)
 		return
 	}
-	if botChatMemberInDiscussionGroup.Status != "administrator" && !botChatMemberInDiscussionGroup.CanSendMediaMessages {
-		h.Logger.WithFields(loggerFields).Error("bot is not an administrator in the discussion group or does not have the permission to send messages or media messages")
+	if botChatMemberInDiscussionGroup.Status != "administrator" &&
+		!botChatMemberInDiscussionGroup.CanSendMediaMessages {
+		h.Logger.WithFields(loggerFields).Error("" +
+			"bot is not an administrator in the discussion group " +
+			"or does not have the permission to send messages or " +
+			"media messages")
 		return
 	}
 
@@ -149,7 +176,9 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		}
 
 		inputMediaDocument := tgbotapi.NewInputMediaDocument(file)
-		h.Logger.Debugf("created a new input media document with name: %s, and size: %d", file.Name, len(file.Bytes))
+		h.Logger.Debugf(""+
+			"created a new input media document with name: %s, "+
+			"and size: %d", file.Name, len(file.Bytes))
 
 		if thumbnailImages[i] != nil {
 			thumbFile := tgbotapi.FileBytes{
@@ -158,7 +187,9 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 			}
 
 			inputMediaDocument.Thumb = thumbFile
-			h.Logger.Debugf("created a new input media document thumbnail with name: %s, and size: %d", thumbFile.Name, len(thumbFile.Bytes))
+			h.Logger.Debugf(""+
+				"created a new input media document thumbnail "+
+				"with name: %s, and size: %d", thumbFile.Name, len(thumbFile.Bytes))
 		}
 
 		mediaGroupConfig.Media = append(mediaGroupConfig.Media, inputMediaDocument)
@@ -170,7 +201,9 @@ func (h *Handler) HandleMessageAutomaticForwardedFromLinkedChannel(c *handler.Co
 		return
 	}
 
-	h.Logger.WithFields(loggerFields).Infof("%d images sent as comment of channel post in discussion group", len(images))
+	h.Logger.WithFields(loggerFields).Infof(""+
+		"%d images sent as comment of channel post in "+
+		"discussion group", len(images))
 
 	for _, i := range images {
 		i.Reset()

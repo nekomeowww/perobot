@@ -75,13 +75,11 @@ func (h *Handler) fetchImageMediaAsFetchedTweetMedia(
 
 	regularURL := media.MediaURLHTTPS
 	originalURL := tweetImageTo4kImage(regularURL)
-
-	var regularImageBuffer *bytes.Buffer
-	var originalImageBuffer *bytes.Buffer
-
 	fc.StepEnds(elapsing.WithName("Generate regular and original image URLs"))
 
 	wg := conc.NewWaitGroup()
+
+	var regularImageBuffer *bytes.Buffer
 	wg.Go(func() {
 		var err error
 		regularImageBuffer, err = h.fetchTweetMedia(regularURL, logEntry)
@@ -89,6 +87,8 @@ func (h *Handler) fetchImageMediaAsFetchedTweetMedia(
 			logEntry.Errorf("failed to fetch regular images, err: %v", err)
 		}
 	})
+
+	var originalImageBuffer *bytes.Buffer
 	wg.Go(func() {
 		var err error
 		originalImageBuffer, err = h.fetchTweetMedia(originalURL, logEntry)
@@ -103,7 +103,6 @@ func (h *Handler) fetchImageMediaAsFetchedTweetMedia(
 	}
 
 	fc.StepEnds(elapsing.WithName("Fetch regular and original images"))
-
 	return &FetchedTweetMedia{
 		Type:         twitter_public_types.TweetLegacyExtendedEntityMediaTypePhoto,
 		URL:          regularURL,
@@ -134,10 +133,9 @@ func (h *Handler) fetchVideoMediaAsFetchedTweetMedia(
 	originalURL := media.VideoInfo.Variants[len(media.VideoInfo.Variants)-1].URL
 	fc.StepEnds(elapsing.WithName("Generate regular and original video URLs"))
 
-	var regularVideoBuffer *bytes.Buffer
-	var originalVideoBuffer *bytes.Buffer
-
 	wg := conc.NewWaitGroup()
+
+	var regularVideoBuffer *bytes.Buffer
 	wg.Go(func() {
 		var err error
 		regularVideoBuffer, err = h.fetchTweetMedia(regularURL, logEntry)
@@ -145,6 +143,8 @@ func (h *Handler) fetchVideoMediaAsFetchedTweetMedia(
 			logEntry.Errorf("failed to fetch regular videos, err: %v", err)
 		}
 	})
+
+	var originalVideoBuffer *bytes.Buffer
 	wg.Go(func() {
 		var err error
 		originalVideoBuffer, err = h.fetchTweetMedia(originalURL, logEntry)
@@ -159,7 +159,6 @@ func (h *Handler) fetchVideoMediaAsFetchedTweetMedia(
 	}
 
 	fc.StepEnds(elapsing.WithName("Fetch regular and original videos"))
-
 	return &FetchedTweetMedia{
 		Type:         twitter_public_types.TweetLegacyExtendedEntityMediaTypeVideo,
 		URL:          regularURL,
@@ -217,6 +216,12 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 	if c.Update.ChannelPost.ForwardFromChat != nil {
 		return
 	}
+	// 不包含 !t 前缀的消息不处理
+	if !strings.HasPrefix(c.Update.ChannelPost.Text, "/t ") {
+		return
+	}
+
+	c.Update.ChannelPost.Text = strings.TrimPrefix(c.Update.ChannelPost.Text, "/t ")
 
 	e := elapsing.New()
 	tweetURL, err := url.Parse(c.Update.ChannelPost.Text)
@@ -224,6 +229,7 @@ func (h *Handler) HandleChannelPostTweetToImages(c *handler.Context) {
 		return
 	}
 	e.StepEnds(elapsing.WithName("Parse URL"))
+	h.Logger.Info("parsed url: ", tweetURL)
 
 	tweetRawURL := fmt.Sprintf("%s://%s%s", tweetURL.Scheme, tweetURL.Host, tweetURL.Path)
 	tweetID := TweetIDFromText(tweetRawURL)

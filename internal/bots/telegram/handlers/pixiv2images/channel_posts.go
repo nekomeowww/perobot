@@ -79,15 +79,11 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 	if c.Update.ChannelPost.ForwardFromChat != nil {
 		return
 	}
-
-	_, err := c.Bot.Request(tgbotapi.ChatActionConfig{
-		BaseChat: tgbotapi.BaseChat{ChatID: c.Update.ChannelPost.Chat.ID},
-		Action:   "upload_photo",
-	})
-	if err != nil {
-		h.Logger.Errorf("failed to send chat action, err: %v", err)
-		// PASS
+	if !strings.HasPrefix(c.Update.ChannelPost.Text, "/t ") {
+		return
 	}
+
+	c.Update.ChannelPost.Text = strings.TrimPrefix(c.Update.ChannelPost.Text, "/t ")
 
 	e := elapsing.New()
 	pixivIllustURL, err := url.Parse(c.Update.ChannelPost.Text)
@@ -97,7 +93,12 @@ func (h *Handler) HandleChannelPostPixivToImages(c *handler.Context) {
 
 	e.StepEnds(elapsing.WithName("Parse URL"))
 
-	pixivIllustRawURL := fmt.Sprintf("%s://%s%s", pixivIllustURL.Scheme, pixivIllustURL.Host, pixivIllustURL.Path)
+	pixivIllustRawURL := fmt.Sprintf(
+		"%s://%s%s",
+		pixivIllustURL.Scheme,
+		pixivIllustURL.Host,
+		pixivIllustURL.Path,
+	)
 	illustID := IllustIDFromText(pixivIllustRawURL)
 	if illustID == "" {
 		return

@@ -3,6 +3,7 @@ package tweet2images
 import (
 	"log"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/nekomeowww/perobot/internal/lib"
@@ -46,4 +47,8 @@ func TestTweetIDFromText(t *testing.T) {
 
 	tweetID = TweetIDFromText("https://twitter.com/testaccount/status/1234")
 	assert.Equal("1234", tweetID)
+}
+
+func TestPrefix(t *testing.T) {
+	assert.True(t, strings.HasPrefix("/t https://twitter.com/downvote_me/status/1634641791801757696", "/t "))
 }

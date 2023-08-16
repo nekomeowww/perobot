@@ -20,7 +20,7 @@ FROM debian as runner
 
 RUN apt update && apt upgrade -y && apt install -y ca-certificates curl && update-ca-certificates
 
-COPY --from=builder /app/perobot/release/pero /app/perobot/bin/
+COPY --from=builder /app/perobot/release/pero /usr/local/bin
 
 # 入点是编译好的 hyphen 应用程序
 ENTRYPOINT [ "/usr/local/bin/pero" ]
